@@ -99,7 +99,8 @@ class HealthChecker:
             self._check_database_health(),
             self._check_signal_bus_health(),
             self._check_llm_service_health(),
-            self._check_orchestrator_health()
+            self._check_orchestrator_health(),
+            self._check_training_data_health()
         ]
         
         try:
@@ -110,7 +111,7 @@ class HealthChecker:
                     components[result.name] = result
                 elif isinstance(result, Exception):
                     # Handle individual component failures gracefully
-                    component_names = ["system", "database", "signal_bus", "llm", "orchestrator"]
+                    component_names = ["system", "database", "signal_bus", "llm", "orchestrator", "training_data"]
                     components[component_names[i]] = ComponentHealth(
                         name=component_names[i],
                         status=HealthStatus.UNHEALTHY,
@@ -419,6 +420,84 @@ class HealthChecker:
                 name="orchestrator", 
                 status=HealthStatus.UNHEALTHY,
                 message=f"Orchestrator health check failed: {str(e)}",
+                last_checked=datetime.now(),
+                response_time_ms=(time.time() - start_time) * 1000
+            )
+    
+    async def _check_training_data_health(self) -> ComponentHealth:
+        """Check training data collection health"""
+        start_time = time.time()
+        
+        try:
+            # Check if training data is enabled
+            if not self.config.training_data_enabled:
+                return ComponentHealth(
+                    name="training_data",
+                    status=HealthStatus.DEGRADED,
+                    message="Training data collection is disabled",
+                    last_checked=datetime.now(),
+                    response_time_ms=(time.time() - start_time) * 1000,
+                    details={"enabled": False}
+                )
+            
+            # Check training data file
+            training_path = self.config.training_data_path
+            if not os.path.isabs(training_path):
+                # Make relative path absolute from project root
+                project_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+                training_path = os.path.join(project_root, training_path)
+            
+            # Ensure directory exists
+            os.makedirs(os.path.dirname(training_path), exist_ok=True)
+            
+            details = {
+                "enabled": True,
+                "file_path": training_path,
+                "file_exists": os.path.exists(training_path)
+            }
+            
+            if os.path.exists(training_path):
+                try:
+                    file_stats = os.stat(training_path)
+                    details.update({
+                        "file_size_bytes": file_stats.st_size,
+                        "file_modified": datetime.fromtimestamp(file_stats.st_mtime).isoformat(),
+                        "file_readable": os.access(training_path, os.R_OK),
+                        "file_writable": os.access(training_path, os.W_OK)
+                    })
+                    
+                    # Count lines in JSONL file for basic health check
+                    try:
+                        with open(training_path, 'r', encoding='utf-8') as f:
+                            line_count = sum(1 for _ in f)
+                        details["record_count"] = line_count
+                    except Exception as e:
+                        details["record_count_error"] = str(e)
+                    
+                    status = HealthStatus.HEALTHY
+                    message = f"Training data collection operational - {details.get('record_count', 'unknown')} records"
+                    
+                except Exception as e:
+                    status = HealthStatus.DEGRADED
+                    message = f"Training data file exists but cannot read stats: {str(e)}"
+            else:
+                status = HealthStatus.HEALTHY  # File will be created on first write
+                message = "Training data collection enabled - file will be created on first write"
+            
+            return ComponentHealth(
+                name="training_data",
+                status=status,
+                message=message,
+                last_checked=datetime.now(),
+                response_time_ms=(time.time() - start_time) * 1000,
+                details=details
+            )
+            
+        except Exception as e:
+            return ComponentHealth(
+                name="training_data",
+                status=HealthStatus.UNHEALTHY,
+                message=f"Training data health check failed: {str(e)}",
                 last_checked=datetime.now(),
                 response_time_ms=(time.time() - start_time) * 1000
             )

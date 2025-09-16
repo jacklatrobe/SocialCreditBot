@@ -43,6 +43,10 @@ class Settings(BaseSettings):
     max_reply_length: int = Field(2000, env="MAX_REPLY_LENGTH")  # Discord message limit
     reply_timeout_seconds: int = Field(30, env="REPLY_TIMEOUT_SECONDS")
     
+    # Simple Training Data Collection (ON BY DEFAULT)
+    training_data_enabled: bool = Field(True, env="TRAINING_DATA_ENABLED")
+    training_data_path: str = Field("./data/training_data.jsonl", env="TRAINING_DATA_PATH")
+    
     class Config:
         env_file = ".env"
         case_sensitive = False

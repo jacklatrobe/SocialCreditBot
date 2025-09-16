@@ -156,6 +156,12 @@ class MessageClassificationService:
         self.llm_client = llm_client
         self.rules = ClassificationRules()
         
+        # Initialize simple training data collector
+        from app.config import get_settings
+        from app.llm.training_data import get_collector
+        config = get_settings()
+        self.training_collector = get_collector(config)
+        
         # Classification statistics
         self.stats = {
             'total_classifications': 0,
@@ -204,6 +210,10 @@ class MessageClassificationService:
             
             # Update statistics
             self._update_stats(final_result)
+            
+            # Simple training data collection
+            if self.training_collector:
+                await self.training_collector.collect(signal, final_result)
             
             return final_result
             
