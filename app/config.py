@@ -23,7 +23,7 @@ class Settings(BaseSettings):
     # LLM Configuration (Required)
     llm_provider: str = Field("openai", env="LLM_PROVIDER")
     llm_api_key: str = Field(..., env="LLM_API_KEY")
-    llm_model: str = Field("gpt-4o-mini", env="LLM_MODEL")  # Using available model instead of GPT-5-nano
+    llm_model: str = Field("gpt-5-mini", env="LLM_MODEL")
     
     # Database Configuration
     db_path: str = Field("./data/app.db", env="DB_PATH")
