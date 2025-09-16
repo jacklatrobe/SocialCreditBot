@@ -29,6 +29,7 @@ from app.orchestrator.react_orchestrator import start_react_orchestrator, stop_r
 from app.observer.llm_observer import start_llm_observer, stop_llm_observer
 from app.ingest.discord_client import get_discord_bot
 from app.monitoring.health import HealthChecker, SystemHealth, HealthStatus
+from app.orchestrator.aggregator import get_aggregator
 
 # Configure logging
 log_handlers = [logging.StreamHandler(sys.stdout)]
@@ -241,6 +242,89 @@ async def simple_health():
         raise HTTPException(status_code=500, detail=f"Health check failed: {str(e)}")
 
 
+# User Profile Endpoints  
+@app.get("/profiles/stats")
+async def get_profile_stats():
+    """Get aggregator statistics and overview."""
+    try:
+        aggregator = get_aggregator()
+        stats = aggregator.get_stats()
+        return {
+            "aggregator_stats": stats,
+            "status": "operational"
+        }
+    except Exception as e:
+        logger.error(f"Failed to get profile stats: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to get profile stats: {str(e)}")
+
+
+@app.get("/profiles/{user_id}")
+async def get_user_profile(user_id: str):
+    """Get detailed profile for a specific user."""
+    try:
+        aggregator = get_aggregator()
+        profile = await aggregator.get_user_profile(user_id)
+        
+        if not profile:
+            raise HTTPException(status_code=404, detail=f"User profile not found: {user_id}")
+        
+        return {
+            "user_id": user_id,
+            "profile": {
+                "message_count": profile.message_count,
+                "question_count": profile.question_count,
+                "complaint_count": profile.complaint_count,
+                "toxicity_incidents": profile.toxicity_incidents,
+                "urgency_requests": profile.urgency_requests,
+                "last_activity": profile.last_activity.isoformat() if profile.last_activity else None,
+                "last_react_trigger": profile.last_react_trigger.isoformat() if profile.last_react_trigger else None,
+                "react_trigger_count": profile.react_trigger_count
+            }
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get user profile for {user_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to get user profile: {str(e)}")
+
+
+@app.get("/profiles")
+async def list_user_profiles(limit: int = 50):
+    """List all user profiles with basic stats."""
+    try:
+        aggregator = get_aggregator()
+        
+        # Get all profiles (limited for performance)
+        all_profiles = []
+        profile_count = 0
+        
+        for user_id, profile in aggregator._profiles.items():
+            if profile_count >= limit:
+                break
+                
+            all_profiles.append({
+                "user_id": user_id,
+                "message_count": profile.message_count,
+                "question_count": profile.question_count,
+                "complaint_count": profile.complaint_count,
+                "toxicity_incidents": profile.toxicity_incidents,
+                "urgency_requests": profile.urgency_requests,
+                "last_activity": profile.last_activity.isoformat() if profile.last_activity else None,
+                "react_trigger_count": profile.react_trigger_count
+            })
+            profile_count += 1
+        
+        return {
+            "profiles": all_profiles,
+            "total_shown": len(all_profiles),
+            "limit_applied": limit,
+            "stats": aggregator.get_stats()
+        }
+    except Exception as e:
+        logger.error(f"Failed to list user profiles: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to list user profiles: {str(e)}")
+
+
 @app.get("/status")
 async def system_status():
     """System status endpoint providing operational information."""
@@ -269,6 +353,9 @@ async def root():
             "health": "/health",
             "simple_health": "/health/simple", 
             "status": "/status",
+            "profiles_stats": "/profiles/stats",
+            "profiles_list": "/profiles",
+            "user_profile": "/profiles/{user_id}",
             "docs": "/docs"
         }
     }
