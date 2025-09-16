@@ -16,6 +16,7 @@ for container orchestration and monitoring systems.
 """
 
 import asyncio
+import logging
 import os
 import platform
 import time
@@ -33,6 +34,7 @@ from pydantic import BaseModel
 from app.config import Settings as Config
 from app.infra.db import Database
 from app.infra.bus import SignalBus, SignalType, BusMessage
+from app.infra.task_manager import get_task_manager
 from app.llm.client import OpenAILLMClient, LLMConfig
 from app.orchestrator.core import MessageOrchestrator
 
@@ -91,6 +93,9 @@ class HealthChecker:
         - Descriptive naming
         - Minimal side effects
         """
+        logger = logging.getLogger(__name__)
+        logger.info("🔍 Starting comprehensive health check...")
+        
         components = {}
         
         # Run all health checks in parallel for better performance
@@ -98,29 +103,38 @@ class HealthChecker:
             self._check_system_resources(),
             self._check_database_health(),
             self._check_signal_bus_health(),
+            self._check_background_tasks_health(),
             self._check_llm_service_health(),
             self._check_orchestrator_health(),
             self._check_training_data_health()
         ]
         
         try:
+            logger.info("🔍 Running health checks for 7 components...")
             results = await asyncio.gather(*health_checks, return_exceptions=True)
             
+            component_names = ["system", "database", "signal_bus", "background_tasks", "llm", "orchestrator", "training_data"]
+            
             for i, result in enumerate(results):
+                component_name = component_names[i]
+                
                 if isinstance(result, ComponentHealth):
                     components[result.name] = result
+                    logger.info(f"✅ {component_name} health check: {result.status} - {result.message}")
                 elif isinstance(result, Exception):
                     # Handle individual component failures gracefully
-                    component_names = ["system", "database", "signal_bus", "llm", "orchestrator", "training_data"]
-                    components[component_names[i]] = ComponentHealth(
-                        name=component_names[i],
+                    error_msg = f"Health check failed: {str(result)}"
+                    logger.error(f"❌ {component_name} health check failed: {str(result)}")
+                    components[component_name] = ComponentHealth(
+                        name=component_name,
                         status=HealthStatus.UNHEALTHY,
-                        message=f"Health check failed: {str(result)}",
+                        message=error_msg,
                         last_checked=datetime.now()
                     )
         
         except Exception as e:
             # Fallback if gather itself fails
+            logger.error(f"❌ Health check system error: {str(e)}")
             components["system"] = ComponentHealth(
                 name="system",
                 status=HealthStatus.UNHEALTHY,
@@ -130,6 +144,14 @@ class HealthChecker:
         
         # Determine overall system status
         overall_status = self._determine_overall_status(components)
+        logger.info(f"🏥 Overall system health: {overall_status}")
+        
+        # Log component summary
+        healthy_count = sum(1 for c in components.values() if c.status == HealthStatus.HEALTHY)
+        degraded_count = sum(1 for c in components.values() if c.status == HealthStatus.DEGRADED)  
+        unhealthy_count = sum(1 for c in components.values() if c.status == HealthStatus.UNHEALTHY)
+        
+        logger.info(f"📊 Health summary: {healthy_count} healthy, {degraded_count} degraded, {unhealthy_count} unhealthy")
         
         return SystemHealth(
             status=overall_status,
@@ -202,14 +224,14 @@ class HealthChecker:
         start_time = time.time()
         
         try:
-            if not self._db_manager:
-                # Ensure the data directory exists and use absolute path
-                db_path = self.config.db_path
-                if not os.path.isabs(db_path):
-                    # Make relative path absolute from project root
-                    project_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
-                    db_path = os.path.join(project_root, db_path)
+            # Ensure the data directory exists and use absolute path
+            db_path = self.config.db_path
+            if not os.path.isabs(db_path):
+                # Make relative path absolute from project root
+                project_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+                db_path = os.path.join(project_root, db_path)
                 
+            if not self._db_manager:
                 os.makedirs(os.path.dirname(db_path), exist_ok=True)
                 # Database constructor expects just the path, not the full URL
                 self._db_manager = Database(db_path)
@@ -302,8 +324,52 @@ class HealthChecker:
                 response_time_ms=(time.time() - start_time) * 1000
             )
     
+    async def _check_background_tasks_health(self) -> ComponentHealth:
+        """Check background task manager and individual task status"""
+        start_time = time.time()
+        
+        try:
+            task_manager = get_task_manager()
+            health_summary = task_manager.get_health_summary()
+            all_task_status = task_manager.get_all_task_status()
+            
+            # Determine overall status
+            if not health_summary['manager_running']:
+                status = HealthStatus.UNHEALTHY
+                message = "Background task manager is not running"
+            elif health_summary['failed_tasks'] > 0:
+                status = HealthStatus.DEGRADED
+                message = f"{health_summary['failed_tasks']} of {health_summary['total_tasks']} background tasks failed"
+            elif health_summary['healthy']:
+                status = HealthStatus.HEALTHY
+                message = f"All {health_summary['total_tasks']} background tasks running normally"
+            else:
+                status = HealthStatus.DEGRADED
+                message = f"Background tasks partially operational ({health_summary['running_tasks']}/{health_summary['total_tasks']} running)"
+            
+            return ComponentHealth(
+                name="background_tasks",
+                status=status,
+                message=message,
+                last_checked=datetime.now(),
+                response_time_ms=(time.time() - start_time) * 1000,
+                details={
+                    'summary': health_summary,
+                    'task_details': all_task_status
+                }
+            )
+            
+        except Exception as e:
+            return ComponentHealth(
+                name="background_tasks",
+                status=HealthStatus.UNHEALTHY,
+                message=f"Background task health check failed: {str(e)}",
+                last_checked=datetime.now(),
+                response_time_ms=(time.time() - start_time) * 1000
+            )
+
     async def _check_llm_service_health(self) -> ComponentHealth:
-        """Check LLM service availability with simple test classification"""
+        """Check LLM service configuration without making API calls"""
         start_time = time.time()
         
         try:
@@ -312,67 +378,56 @@ class HealthChecker:
                 return ComponentHealth(
                     name="llm",
                     status=HealthStatus.DEGRADED,
-                    message="LLM API key not configured - health check skipped",
+                    message="LLM API key not configured",
                     last_checked=datetime.now(),
                     response_time_ms=(time.time() - start_time) * 1000,
                     details={"config_missing": "llm_api_key"}
                 )
             
+            # Check if LLM model is configured
+            if not hasattr(self.config, 'llm_model') or not self.config.llm_model:
+                return ComponentHealth(
+                    name="llm",
+                    status=HealthStatus.DEGRADED,
+                    message="LLM model not configured",
+                    last_checked=datetime.now(),
+                    response_time_ms=(time.time() - start_time) * 1000,
+                    details={"config_missing": "llm_model"}
+                )
+            
+            # Check if client can be instantiated (no API call)
             if not self._llm_client:
-                # OpenAILLMClient reads config from environment via get_settings()
-                self._llm_client = OpenAILLMClient()
+                try:
+                    self._llm_client = OpenAILLMClient()
+                except Exception as e:
+                    return ComponentHealth(
+                        name="llm",
+                        status=HealthStatus.DEGRADED,
+                        message=f"LLM client initialization failed: {str(e)}",
+                        last_checked=datetime.now(),
+                        response_time_ms=(time.time() - start_time) * 1000,
+                        details={"initialization_error": str(e)}
+                    )
             
-            # Test with a simple, low-cost classification
-            # Need to create a proper Signal object, not just a string
-            from app.signals.base import Signal
-            test_signal = Signal(
-                signal_id="health_check_test_llm",
-                source="health_checker", 
-                created_at=datetime.now(),
-                author={"user_id": "health_check", "username": "Health Check"},
-                context={"channel_id": "health", "guild_id": "health"},
-                content="Hello, this is a test message for health checking."
-            )
-            
-            result = await self._llm_client.classify_message(test_signal)
-            
-            # Check if we got a reasonable response
-            if result and hasattr(result, 'purpose') and result.purpose:
-                status = HealthStatus.HEALTHY
-                message = "LLM service operational and responding correctly"
-                details = {
-                    "model": getattr(self.config, 'llm_model', 'unknown'),
-                    "test_classification": result.purpose,
-                    "test_confidence": getattr(result, 'confidence', None)
-                }
-            else:
-                status = HealthStatus.DEGRADED
-                message = "LLM service responding but with unexpected results"
-                details = {"response": str(result)}
-            
+            # If we get here, configuration looks good
             return ComponentHealth(
                 name="llm",
-                status=status,
-                message=message,
+                status=HealthStatus.HEALTHY,
+                message="LLM service configured and client ready (no API test performed)",
                 last_checked=datetime.now(),
                 response_time_ms=(time.time() - start_time) * 1000,
-                details=details
+                details={
+                    "model": getattr(self.config, 'llm_model', 'unknown'),
+                    "api_key_configured": bool(getattr(self.config, 'llm_api_key', None)),
+                    "client_initialized": self._llm_client is not None
+                }
             )
             
         except Exception as e:
-            # Determine if this is a configuration issue or service issue
-            error_message = str(e).lower()
-            if any(term in error_message for term in ['api key', 'authentication', 'unauthorized']):
-                status = HealthStatus.DEGRADED
-                message = f"LLM service configuration issue: {str(e)}"
-            else:
-                status = HealthStatus.UNHEALTHY
-                message = f"LLM service health check failed: {str(e)}"
-                
             return ComponentHealth(
                 name="llm",
-                status=status,
-                message=message,
+                status=HealthStatus.DEGRADED,
+                message=f"LLM service configuration check failed: {str(e)}",
                 last_checked=datetime.now(),
                 response_time_ms=(time.time() - start_time) * 1000
             )
@@ -386,25 +441,32 @@ class HealthChecker:
                 # MessageOrchestrator only takes max_concurrent_tasks parameter
                 self._orchestrator = MessageOrchestrator(max_concurrent_tasks=5)
             
-            # Check if orchestrator is properly initialized
-            if hasattr(self._orchestrator, '_rules') and self._orchestrator._rules:
-                rule_count = len(self._orchestrator._rules)
+            # Check if orchestrator is properly initialized with aggregator
+            # The orchestrator now uses an aggregation-based rules engine instead of static rules
+            if hasattr(self._orchestrator, '_aggregator') and self._orchestrator._aggregator:
                 status = HealthStatus.HEALTHY
-                message = f"Orchestrator operational with {rule_count} rules loaded"
+                message = "Orchestrator operational with user profile aggregation rules engine"
                 
                 # Get orchestrator statistics if available
                 stats = {}
                 if hasattr(self._orchestrator, 'get_stats'):
                     stats = self._orchestrator.get_stats()
                 
+                # Get aggregator statistics 
+                aggregator_stats = {}
+                if hasattr(self._orchestrator._aggregator, 'get_stats'):
+                    aggregator_stats = self._orchestrator._aggregator.get_stats()
+                
                 details = {
-                    "rules_loaded": rule_count,
-                    "stats": stats
+                    "aggregation_rules_loaded": True,
+                    "aggregator_active": True,
+                    "orchestrator_stats": stats,
+                    "aggregator_stats": aggregator_stats
                 }
             else:
-                status = HealthStatus.DEGRADED
-                message = "Orchestrator initialized but no rules loaded"
-                details = {"rules_loaded": 0}
+                status = HealthStatus.UNHEALTHY
+                message = "Orchestrator initialized but aggregator not available - app cannot function without rules engine"
+                details = {"aggregation_rules_loaded": False}
             
             return ComponentHealth(
                 name="orchestrator",
@@ -579,7 +641,7 @@ async def simple_health():
     """
     Simple health check for load balancers
     
-    Returns 200 OK if system is healthy, 503 if degraded/unhealthy
+    Returns 200 OK if system is healthy or degraded, 503 only if unhealthy
     """
     if not health_checker:
         raise HTTPException(status_code=503, detail="Health checker not initialized")
@@ -587,8 +649,11 @@ async def simple_health():
     try:
         health_status = await health_checker.get_system_health()
         
-        if health_status.status == HealthStatus.HEALTHY:
-            return {"status": "healthy", "timestamp": health_status.timestamp}
+        if health_status.status in [HealthStatus.HEALTHY, HealthStatus.DEGRADED]:
+            return {
+                "status": health_status.status.value.lower(), 
+                "timestamp": health_status.timestamp
+            }
         else:
             raise HTTPException(
                 status_code=503, 

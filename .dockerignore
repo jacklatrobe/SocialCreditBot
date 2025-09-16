@@ -1,0 +1,80 @@
+# Docker ignore file for SocialCreditBot
+# Ignore Python cache and compiled files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+env/
+ENV/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Local development files
+.env.local
+.env.development
+
+# Test files and coverage
+.coverage
+.pytest_cache/
+htmlcov/
+.tox/
+
+# Git
+.git/
+.gitignore
+
+# Documentation
+README.md
+docs/
+
+# Development tools
+requirements-test.txt
+pytest.ini
+simple_test.log
+test_*.py
+
+# Old files
+main_old.py
+
+# Data that shouldn't be in container
+data/*.db*
+discord_bot.log

@@ -3,7 +3,7 @@ ReAct Agent Orchestrator Implementation
 
 This module integrates the LangGraph ReAct agent with the existing orchestrator
 infrastructure, preserving signal handling, priority queues, and retry logic
-while replacing rule-based decisions with AI agent reasoning.
+while using an aggregator to determine when to invoke the expensive ReAct agent.
 """
 
 import asyncio
@@ -21,6 +21,7 @@ from app.config import get_settings
 from app.orchestrator.react_agent import get_orchestration_graph
 from app.orchestrator.react_context import OrchestrationContext
 from app.orchestrator.react_state import OrchestrationInput
+from app.orchestrator.aggregator import get_aggregator, AggregatedSignal, ActionTrigger
 
 
 logger = logging.getLogger(__name__)
@@ -35,10 +36,10 @@ class TaskPriority(Enum):
 
 @dataclass
 class PriorityTask:
-    """A task with priority for the orchestrator queue (preserved from original)."""
+    """A task with priority for the orchestrator queue (aggregated signals only)."""
     priority: TaskPriority
     timestamp: datetime
-    message: BusMessage
+    aggregated_signal: AggregatedSignal
     
     def __lt__(self, other):
         """Compare tasks for priority queue ordering."""
@@ -49,11 +50,13 @@ class PriorityTask:
 
 class ReactMessageOrchestrator:
     """
-    AI-powered message orchestrator using LangGraph ReAct agent.
+    AI-powered message orchestrator using aggregation + LangGraph ReAct agent.
     
-    This orchestrator preserves all the existing infrastructure (signal handling,
-    priority queues, retry logic) but replaces rule-based decision-making with
-    an AI agent that can reason about Discord messages and decide responses.
+    This orchestrator:
+    1. Receives all classified messages and aggregates user behavior
+    2. Uses rules engine to determine when ReAct agent should be invoked
+    3. Only calls expensive ReAct agent when aggregate signals warrant action
+    4. Preserves existing infrastructure (priority queues, retry logic, etc.)
     """
     
     def __init__(self, max_concurrent_tasks: int = 10):
@@ -61,30 +64,35 @@ class ReactMessageOrchestrator:
         Initialize the ReAct message orchestrator.
         
         Args:
-            max_concurrent_tasks: Maximum number of concurrent message processing tasks
+            max_concurrent_tasks: Maximum number of concurrent ReAct agent tasks
         """
         self.settings = get_settings()
         self._running = False
         self._task: Optional[asyncio.Task] = None
         
-        # Worker pool management (preserved from original)
+        # Worker pool management (for ReAct agent tasks only)
         self._max_concurrent_tasks = max_concurrent_tasks
         self._task_semaphore: Optional[asyncio.Semaphore] = None
         self._active_tasks: set = set()
         
-        # Priority queue system (preserved from original)
+        # Priority queue system (for triggered aggregated signals only)
         self._priority_queue: List[PriorityTask] = []
         self._queue_processor_task: Optional[asyncio.Task] = None
         self._queue_event: Optional[asyncio.Event] = None
         
-        # ReAct agent components
+        # User profile aggregator (NEW - the key missing component)
+        self._aggregator = get_aggregator()
+        
+        # ReAct agent components (only for triggered responses)
         self._agent_graph = get_orchestration_graph()
         self._agent_context = OrchestrationContext()
         
-        # Statistics (enhanced for ReAct agent)
+        # Statistics (enhanced for aggregation)
         self._stats = {
-            'messages_orchestrated': 0,
-            'agent_decisions': 0,
+            'messages_received': 0,
+            'messages_aggregated': 0,
+            'rules_triggered': 0,
+            'react_agent_invocations': 0,
             'responses_sent': 0,
             'no_action_decisions': 0,
             'errors': 0,
@@ -100,7 +108,7 @@ class ReactMessageOrchestrator:
             'tool_calls_made': 0
         }
         
-        logger.info("ReAct Message Orchestrator initialized")
+        logger.info("ReAct Message Orchestrator initialized with user profile aggregation")
     
     async def start(self) -> None:
         """Start the orchestrator and begin processing signals."""
@@ -118,7 +126,7 @@ class ReactMessageOrchestrator:
         
         # Subscribe to classified signals
         signal_bus = get_signal_bus()
-        await signal_bus.subscribe(SignalType.SIGNAL_CLASSIFIED, self._handle_classified_signal)
+        signal_bus.subscribe(SignalType.SIGNAL_CLASSIFIED, self._handle_classified_signal)
         
         # Start the priority queue processor
         self._queue_processor_task = asyncio.create_task(self._process_priority_queue())
@@ -145,87 +153,98 @@ class ReactMessageOrchestrator:
         
         # Unsubscribe from signals
         signal_bus = get_signal_bus()
-        await signal_bus.unsubscribe(SignalType.SIGNAL_CLASSIFIED, self._handle_classified_signal)
+        signal_bus.unsubscribe(SignalType.SIGNAL_CLASSIFIED, self._handle_classified_signal)
         
         logger.info("Message Orchestrator stopped")
     
     async def _handle_classified_signal(self, message: BusMessage) -> None:
         """
-        Handle a classified signal by adding it to the priority queue.
+        Handle a classified signal by aggregating user behavior and 
+        determining if ReAct agent should be triggered.
         
         Args:
             message: The bus message containing the classified signal
         """
         try:
+            self._stats['messages_received'] += 1
+            
             # Extract the signal
             signal_data = message.data.get('signal')
             if not signal_data or not isinstance(signal_data, BaseSignal):
                 logger.warning(f"Invalid signal data in message {message.message_id}")
                 return
             
-            # Determine priority (preserved logic from original)
-            priority = self._determine_task_priority(signal_data)
+            # Aggregate the message into user profile
+            aggregated_signal = await self._aggregator.process_classified_message(signal_data)
+            self._stats['messages_aggregated'] += 1
             
-            # Create priority task
+            # If aggregation didn't trigger any rules, we're done (no expensive ReAct call)
+            if not aggregated_signal:
+                logger.debug(f"Message {message.message_id} aggregated but no action triggered")
+                return
+            
+            self._stats['rules_triggered'] += 1
+            logger.info(f"Aggregation triggered {aggregated_signal.trigger.value} for user {aggregated_signal.user_id}")
+            
+            # Determine priority for ReAct agent processing
+            priority = self._determine_task_priority_from_trigger(aggregated_signal)
+            
+            # Create priority task for ReAct agent
             priority_task = PriorityTask(
                 priority=priority,
                 timestamp=datetime.now(timezone.utc),
-                message=message
+                aggregated_signal=aggregated_signal
             )
             
-            # Add to priority queue
+            # Add to priority queue for ReAct agent processing
             heappush(self._priority_queue, priority_task)
             self._stats['priority_queue_size'] = len(self._priority_queue)
             
             # Signal the queue processor
             if self._queue_event:
                 self._queue_event.set()
-            
-            logger.debug(f"Queued message {message.message_id} with {priority.name} priority")
+                
+            logger.debug(f"Queued aggregated signal {aggregated_signal.trigger.value} with {priority.name} priority")
             
         except Exception as e:
-            logger.error(f"Error queueing classified signal {message.message_id}: {e}")
+            logger.error(f"Error handling classified signal {message.message_id}: {e}")
             self._stats['errors'] += 1
     
-    def _determine_task_priority(self, signal: BaseSignal) -> TaskPriority:
+    def _determine_task_priority_from_trigger(self, aggregated_signal: AggregatedSignal) -> TaskPriority:
         """
-        Determine task priority based on signal classification (preserved from original).
+        Determine task priority based on aggregation trigger.
         
         Args:
-            signal: The classified signal
+            aggregated_signal: The aggregated signal from user behavior analysis
             
         Returns:
-            TaskPriority for this signal
+            TaskPriority for ReAct agent processing
         """
-        try:
-            classification = signal.context.get('classification', signal.metadata.get('classification', {}))
+        trigger = aggregated_signal.trigger
+        urgency_score = aggregated_signal.urgency_score
+        
+        # High priority triggers
+        if trigger in [ActionTrigger.TOXIC_ESCALATION, ActionTrigger.HIGH_URGENCY]:
+            return TaskPriority.HIGH
             
-            if isinstance(classification, str):
-                try:
-                    classification = json.loads(classification)
-                except (json.JSONDecodeError, ValueError):
-                    classification = {}
+        # Complaints always get normal priority for quick response
+        if trigger == ActionTrigger.COMPLAINT:
+            return TaskPriority.NORMAL
             
-            # Priority logic (preserved from original)
-            message_type = classification.get('message_type', '').lower()
-            toxicity = classification.get('toxicity', 0)
-            confidence = classification.get('confidence', 0)
+        # Questions from new users get priority
+        if trigger == ActionTrigger.NEW_USER_QUESTION:
+            return TaskPriority.NORMAL
             
-            # High priority: spam, toxic content, complaints
-            if message_type in ['spam', 'toxic', 'complaint'] or toxicity > 0.5:
-                return TaskPriority.HIGH
-            
-            # Normal priority: questions, requests
-            elif message_type in ['question', 'request'] and confidence > 0.7:
+        # Regular questions and repeat issues
+        if trigger in [ActionTrigger.QUESTION, ActionTrigger.REPEAT_ISSUE]:
+            # Use urgency score to determine priority
+            if urgency_score > 0.7:
                 return TaskPriority.NORMAL
-            
-            # Low priority: social interactions
             else:
                 return TaskPriority.LOW
                 
-        except Exception as e:
-            logger.warning(f"Error determining priority for signal {signal.signal_id}: {e}")
-            return TaskPriority.NORMAL
+        # Default to low priority
+        return TaskPriority.LOW
     
     async def _process_priority_queue(self):
         """Process tasks from the priority queue using the worker pool."""
@@ -267,54 +286,64 @@ class ReactMessageOrchestrator:
     
     async def _process_task(self, priority_task: PriorityTask):
         """
-        Process a single orchestration task using the ReAct agent.
+        Process a single aggregated signal using the ReAct agent.
         
         Args:
-            priority_task: The task to process
+            priority_task: The priority task containing aggregated signal
         """
         try:
-            signal_data = priority_task.message.data.get('signal')
-            if not isinstance(signal_data, BaseSignal):
-                logger.error(f"Invalid signal in task processing")
-                return
+            aggregated_signal = priority_task.aggregated_signal
             
-            # Use ReAct agent for orchestration decision
-            await self._orchestrate_with_react_agent(signal_data)
+            logger.debug(f"Processing ReAct agent task for trigger {aggregated_signal.trigger.value} - user {aggregated_signal.user_id}")
+            
+            # Use ReAct agent for orchestration decision with full aggregated context
+            await self._orchestrate_with_react_agent(aggregated_signal)
             
         except Exception as e:
-            logger.error(f"Error processing task: {e}")
+            logger.error(f"Error processing aggregated signal task: {e}")
             self._stats['errors'] += 1
-        finally:
-            self._stats['active_tasks'] = len(self._active_tasks) - 1
     
-    async def _orchestrate_with_react_agent(self, signal: BaseSignal) -> None:
+    async def _orchestrate_with_react_agent(self, aggregated_signal: AggregatedSignal) -> None:
         """
-        Use the ReAct agent to make orchestration decisions.
+        Use the ReAct agent to make orchestration decisions based on aggregated user behavior.
         
         Args:
-            signal: The classified signal to orchestrate
+            aggregated_signal: The aggregated signal containing user profile and trigger context
         """
         try:
-            self._stats['messages_orchestrated'] += 1
+            self._stats['react_agent_invocations'] += 1
             self._stats['last_processed'] = datetime.now(timezone.utc)
             
-            # Parse classification data
-            classification = signal.context.get('classification', signal.metadata.get('classification', {}))
+            original_signal = aggregated_signal.original_signal
+            user_id = aggregated_signal.user_id
+            
+            # Parse classification data from original signal
+            classification = original_signal.context.get('classification', original_signal.metadata.get('classification', {}))
             
             if isinstance(classification, str):
                 try:
                     classification = json.loads(classification)
                 except (json.JSONDecodeError, ValueError):
-                    logger.warning(f"Invalid classification JSON for signal {signal.signal_id}")
+                    logger.warning(f"Invalid classification JSON for signal {original_signal.signal_id}")
                     classification = {}
             
-            logger.debug(f"Running ReAct agent for signal {signal.signal_id}")
+            logger.info(f"Running ReAct agent for {aggregated_signal.trigger.value} - user {user_id} (urgency: {aggregated_signal.urgency_score:.2f})")
+            
+            # Enhance context with aggregation data
+            enhanced_context = {
+                **original_signal.context,
+                'aggregation_trigger': aggregated_signal.trigger.value,
+                'urgency_score': aggregated_signal.urgency_score,
+                'user_profile': aggregated_signal.context['profile_summary'],
+                'recent_activity': aggregated_signal.context['recent_activity'],
+                'trigger_reason': f"User behavior triggered {aggregated_signal.trigger.value} rule"
+            }
             
             # Prepare input for the ReAct agent
             agent_input = OrchestrationInput(
-                signal=signal,
+                signal=original_signal,
                 classification=classification,
-                context=signal.context
+                context=enhanced_context
             )
             
             # Run the ReAct agent
@@ -325,7 +354,7 @@ class ReactMessageOrchestrator:
             )
             
             # Update statistics
-            self._stats['agent_decisions'] += 1
+            self._stats['react_agent_invocations'] += 1
             
             # Count reasoning steps and tool calls
             if result.get('messages'):
@@ -338,13 +367,16 @@ class ReactMessageOrchestrator:
             # Check if the agent sent a response
             if result.get('response_sent'):
                 self._stats['responses_sent'] += 1
-                logger.info(f"ReAct agent sent response for signal {signal.signal_id}")
+                logger.info(f"ReAct agent sent response for {aggregated_signal.trigger.value} to user {user_id}")
+                
+                # Record the response in the aggregator to reduce future urgency
+                await self._aggregator.record_response_sent(user_id, original_signal)
             else:
                 self._stats['no_action_decisions'] += 1
-                logger.debug(f"ReAct agent decided no response needed for signal {signal.signal_id}")
+                logger.debug(f"ReAct agent decided no response needed for {aggregated_signal.trigger.value} - user {user_id}")
             
         except Exception as e:
-            logger.error(f"Error in ReAct agent orchestration for signal {signal.signal_id}: {e}")
+            logger.error(f"Error in ReAct agent orchestration for {aggregated_signal.trigger.value}: {e}")
             self._stats['errors'] += 1
     
     def get_stats(self) -> Dict[str, Any]:

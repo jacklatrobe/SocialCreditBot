@@ -16,7 +16,7 @@ from typing import Dict, Any, Optional
 from datetime import datetime, timezone
 
 from app.signals import Signal as BaseSignal, DiscordMessage
-from app.infra.bus import signal_bus
+from app.infra.bus import get_signal_bus, SignalType, BusMessage
 from app.llm.client import OpenAILLMClient
 from app.llm.classification import MessageClassificationService
 
@@ -62,8 +62,8 @@ class LLMObserver:
         """
         Start the LLM Observer to begin processing signals.
         
-        This method starts the background task that listens for SIGNAL_INGESTED events
-        and processes them through the classification system.
+        Uses proper publish/subscribe pattern by registering a handler
+        with the signal bus instead of polling for messages.
         """
         if self._running:
             logger.warning("LLM Observer is already running")
@@ -71,7 +71,10 @@ class LLMObserver:
         
         self._running = True
         self._stats['start_time'] = datetime.now(timezone.utc)
-        self._task = asyncio.create_task(self._process_signals())
+        
+        # Subscribe to ingested signals using proper event-driven pattern
+        signal_bus = get_signal_bus()
+        signal_bus.subscribe(SignalType.SIGNAL_INGESTED, self._handle_bus_message)
         
         logger.info("LLM Observer started")
     
@@ -79,61 +82,44 @@ class LLMObserver:
         """
         Stop the LLM Observer and clean up resources.
         
-        This method gracefully shuts down the observer by cancelling the background task
-        and ensuring proper cleanup of resources.
+        Since we use event-driven subscription, no background tasks to cancel.
         """
         if not self._running:
             logger.warning("LLM Observer is not running")
             return
         
         self._running = False
-        
-        if self._task and not self._task.done():
-            self._task.cancel()
-            try:
-                await self._task
-            except asyncio.CancelledError:
-                pass
-        
-        self._task = None
         logger.info("LLM Observer stopped")
     
-    async def _process_signals(self) -> None:
+    async def _handle_bus_message(self, message: BusMessage) -> None:
         """
-        Main processing loop that handles incoming signals.
+        Handle incoming bus messages containing ingested signals.
         
-        This method continuously listens for SIGNAL_INGESTED events and processes
-        them through the classification system. Each processed message is published
-        as a SIGNAL_CLASSIFIED event for orchestrator consumption.
+        This method is called by the signal bus when SIGNAL_INGESTED messages
+        are published. Uses proper event-driven architecture.
+        
+        Args:
+            message: Bus message containing the ingested signal
         """
-        logger.info("LLM Observer signal processing started")
-        
         try:
-            while self._running:
-                try:
-                    # Wait for ingested signals with timeout to allow graceful shutdown
-                    signal = await asyncio.wait_for(
-                        signal_bus.subscribe("SIGNAL_INGESTED"), 
-                        timeout=1.0
-                    )
-                    
-                    if signal and isinstance(signal, BaseSignal):
-                        await self._handle_ingested_signal(signal)
-                        
-                except asyncio.TimeoutError:
-                    # Timeout is expected - allows checking if we should continue running
-                    continue
-                except Exception as e:
-                    logger.error(f"Error in signal processing loop: {e}")
-                    self._stats['classification_errors'] += 1
-                    await asyncio.sleep(1)  # Brief pause on error
-                    
-        except asyncio.CancelledError:
-            logger.info("LLM Observer signal processing cancelled")
+            if not self._running:
+                return  # Ignore messages if observer is stopped
+                
+            # Extract signal data from bus message
+            signal_data = message.data
+            
+            # Convert to appropriate signal type
+            if 'discord_message' in signal_data:
+                signal = DiscordMessage(**signal_data['discord_message'])
+            else:
+                logger.warning(f"Unknown signal type in message: {message.message_id}")
+                return
+            
+            await self._handle_ingested_signal(signal)
+            
         except Exception as e:
-            logger.error(f"Fatal error in LLM Observer: {e}")
-        finally:
-            logger.info("LLM Observer signal processing stopped")
+            logger.error(f"Error handling bus message {message.message_id}: {e}")
+            self._stats['classification_errors'] += 1
     
     async def _handle_ingested_signal(self, signal: BaseSignal) -> None:
         """
@@ -156,7 +142,13 @@ class LLMObserver:
                 classified_signal = self._create_classified_signal(signal, classification_result)
                 
                 # Publish classified signal for orchestrator processing
-                await signal_bus.publish("SIGNAL_CLASSIFIED", classified_signal)
+                signal_bus = get_signal_bus()
+                await signal_bus.publish(
+                    signal_type=SignalType.SIGNAL_CLASSIFIED,
+                    data={'classified_signal': classified_signal.__dict__},
+                    source="llm_observer",
+                    correlation_id=signal.signal_id
+                )
                 
                 self._stats['classifications_completed'] += 1
                 logger.debug(f"Published SIGNAL_CLASSIFIED for {signal.signal_id}")
