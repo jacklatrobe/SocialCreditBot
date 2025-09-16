@@ -21,6 +21,7 @@ class SignalType(Enum):
     ACTION_COMPLETED = "action.completed"         # Action tool completed work
     ACTION_FAILED = "action.failed"               # Action tool failed
     SYSTEM_SHUTDOWN = "system.shutdown"           # Graceful shutdown signal
+    SIGNAL_TEST = "signal.test"                   # Health check test signal
 
 
 @dataclass
