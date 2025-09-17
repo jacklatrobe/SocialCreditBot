@@ -24,6 +24,7 @@ class Settings(BaseSettings):
     llm_provider: str = Field("openai", env="LLM_PROVIDER")
     llm_api_key: str = Field(..., env="LLM_API_KEY")
     llm_model: str = Field("gpt-5-mini", env="LLM_MODEL")
+    llm_temperature: float = Field(1.0, env="LLM_TEMPERATURE")
     
     # Database Configuration
     db_path: str = Field("./data/app.db", env="DB_PATH")

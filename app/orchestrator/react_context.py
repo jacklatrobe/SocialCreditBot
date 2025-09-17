@@ -105,23 +105,3 @@ class OrchestrationContext:
     def __post_init__(self) -> None:
         """Load configuration from environment or settings."""
         settings = get_settings()
-        
-        # Override model with environment/config if available
-        if hasattr(settings, 'llm_model') and settings.llm_model:
-            # Convert our config format to LangChain format
-            if settings.llm_model.startswith('gpt-'):
-                self.model = f"openai/{settings.llm_model}"
-            else:
-                self.model = f"openai/{settings.llm_model}"
-        
-        # Load other settings from environment
-        for f in fields(self):
-            if not f.init:
-                continue
-            if getattr(self, f.name) == f.default:
-                env_value = os.environ.get(f.name.upper(), f.default)
-                if f.type == int:
-                    env_value = int(env_value) if isinstance(env_value, str) and env_value.isdigit() else env_value
-                elif f.type == float:
-                    env_value = float(env_value) if isinstance(env_value, str) and env_value.replace('.', '').isdigit() else env_value
-                setattr(self, f.name, env_value)

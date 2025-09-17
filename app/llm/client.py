@@ -64,6 +64,7 @@ class LLMConfig:
     """Configuration for LLM operations."""
     model: str = "gpt-4o-mini"
     max_tokens: int = 1000
+    temperature: float = 1.0
     top_p: float = 0.9
     frequency_penalty: float = 0.1
     presence_penalty: float = 0.1
@@ -165,6 +166,10 @@ class OpenAILLMClient:
         self.settings = get_settings()
         self.config = config or LLMConfig()
         
+        # Override temperature from settings if not explicitly configured
+        if config is None:
+            self.config.temperature = self.settings.llm_temperature
+        
         # Initialize OpenAI client
         self.client = AsyncOpenAI(
             api_key=self.settings.llm_api_key,
@@ -258,6 +263,7 @@ class OpenAILLMClient:
                 model=self.config.model,
                 messages=messages,
                 max_tokens=self.config.max_tokens,
+                temperature=self.config.temperature,
                 top_p=self.config.top_p,
                 frequency_penalty=self.config.frequency_penalty,
                 presence_penalty=self.config.presence_penalty,

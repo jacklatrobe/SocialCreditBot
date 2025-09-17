@@ -50,7 +50,8 @@ def load_chat_model(model_name: str) -> ChatOpenAI:
     
     return ChatOpenAI(
         model=model,
-        api_key=settings.llm_api_key
+        api_key=settings.llm_api_key,
+        temperature=settings.llm_temperature
     )
 
 
@@ -245,7 +246,24 @@ def _format_classification_for_prompt(
     # Build the prompt using f-string to avoid format() conflicts
     try:
         logger.info("About to format prompt with f-string")
-        prompt = f"""Analyze this Discord message and decide if you should respond.
+        prompt = f"""## Your Instructions:
+You are the Social Credit Bot, you help answer questions in a discord server and generally keep the tone of conversation helpful and friendly in the chat.
+You have access to tools to help you respond appropriately.
+First, use the knowledgebase tool to run single word queries against the knowledgebase, eg: "workbench".
+Then, use the send_discord_response tool to respond to the user.
+
+**Decision Rules:**
+- Use the knowledgebase tool to look up any relevant information.
+- If the message is toxic (toxicity > 0.5), respond with a warning and do not use the knowledgebase.
+- If the message is a complaint, respond with empathy and offer assistance.
+- If the message is a question, provide a helpful and accurate answer.
+- If the message is social or friendly, respond in kind but keep it brief.
+- Send ONLY ONE send_discord_response using the tool once you have gathered enough information.
+- After sending the message via discord, end immediately.
+
+**Available Tools:**
+- `send_discord_response`: Send a Discord message to the user
+- `knowledgebase`: Query the knowledge base for information
 
 ## Message Classification
 - **Type**: {message_type}
@@ -257,21 +275,7 @@ def _format_classification_for_prompt(
 - **Social Credit Score**: {social_credit_score}
 - **Channel ID**: {channel_id}
 - **Message**: "{message_content}"
-
-## Your Instructions
-You can only respond to humans via the `send_discord_response` tool. 
-
-**Decision Rules:**
-- Send ONE message if relevant using the tool
-- After sending or deciding not to send, end immediately with EXACTLY one of:
-  - "Message sent"
-  - "No message sent - [brief reason]"
-
-**Available Tools:**
-- `send_discord_response`: Send a Discord message to the user
-- `knowledgebase`: Query the knowledge base for information
-
-Make your decision and take action now."""
+"""
         logger.info("F-string prompt formatted successfully")
         return prompt
     except Exception as fstring_error:
