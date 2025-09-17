@@ -364,6 +364,12 @@ class ReactMessageOrchestrator:
                 context=enhanced_context
             )
             
+            logger.info(f"🚀 Starting ReAct agent workflow for signal {original_signal.signal_id}")
+            logger.info(f"   Agent context: max_steps={self._agent_context.max_steps}, model={self._agent_context.model}")
+            logger.info(f"   Signal type: {type(original_signal).__name__}")
+            logger.info(f"   Classification data: {classification}")
+            logger.info(f"   Enhanced context keys: {list(enhanced_context.keys())}")
+            
             # Run the ReAct agent
             result = await self._agent_graph.ainvoke(
                 agent_input,
@@ -371,27 +377,65 @@ class ReactMessageOrchestrator:
                 recursion_limit=self._agent_context.max_steps
             )
             
+            logger.info(f"✅ ReAct agent workflow completed for signal {original_signal.signal_id}")
+            logger.info(f"   Result keys: {list(result.keys())}")
+            if result.get('messages'):
+                logger.info(f"   Total messages in result: {len(result['messages'])}")
+                for i, msg in enumerate(result['messages']):
+                    msg_type = type(msg).__name__
+                    has_tools = hasattr(msg, 'tool_calls') and bool(msg.tool_calls)
+                    tool_count = len(msg.tool_calls) if has_tools else 0
+                    content_preview = msg.content[:100] if hasattr(msg, 'content') and msg.content else '<no content>'
+                    logger.info(f"     Message {i+1}: {msg_type}, content: {repr(content_preview)}, tool_calls: {tool_count}")
+            
+            # Process final decision
+            final_message = result.get('messages', [])[-1] if result.get('messages') else None
+            if final_message:
+                logger.info(f"📋 Final agent decision:")
+                logger.info(f"   Message type: {type(final_message).__name__}")
+                if hasattr(final_message, 'content') and final_message.content:
+                    logger.info(f"   Decision content: {repr(final_message.content)}")
+                if hasattr(final_message, 'tool_calls') and final_message.tool_calls:
+                    logger.info(f"   Tools to execute: {len(final_message.tool_calls)}")
+                    for j, tool_call in enumerate(final_message.tool_calls):
+                        tool_name = tool_call.get('name', 'unknown')
+                        tool_args = tool_call.get('args', {})
+                        logger.info(f"     Tool {j+1}: {tool_name} with args {tool_args}")
+                else:
+                    logger.info(f"   Decision: NO ACTION (no tool calls)")
+            
             # Update statistics
             self._stats['react_agent_invocations'] += 1
             
             # Count reasoning steps and tool calls
+            tool_calls_made = 0
             if result.get('messages'):
                 for msg in result['messages']:
                     if hasattr(msg, 'tool_calls') and msg.tool_calls:
-                        self._stats['tool_calls_made'] += len(msg.tool_calls)
+                        tool_calls_made += len(msg.tool_calls)
+                        logger.info(f"   Found {len(msg.tool_calls)} tool calls in message")
+                        for j, tool_call in enumerate(msg.tool_calls):
+                            tool_name = tool_call.get('name', 'unknown')
+                            logger.info(f"     Tool call {j+1}: {tool_name}")
                 
                 self._stats['agent_reasoning_steps'] = len(result['messages'])
+                self._stats['tool_calls_made'] += tool_calls_made
+                
+                logger.info(f"📊 Agent reasoning steps: {len(result['messages'])}, tool calls: {tool_calls_made}")
+            
+            # Determine if a response was sent by checking for tool calls
+            response_sent = tool_calls_made > 0
             
             # Check if the agent sent a response
-            if result.get('response_sent'):
+            if response_sent:
                 self._stats['responses_sent'] += 1
-                logger.info(f"ReAct agent sent response for {aggregated_signal.trigger.value} to user {user_id}")
+                logger.info(f"✅ ReAct agent sent response for {aggregated_signal.trigger.value} to user {user_id}")
                 
                 # Record the response in the aggregator to reduce future urgency
                 await self._aggregator.record_response_sent(user_id, original_signal)
             else:
                 self._stats['no_action_decisions'] += 1
-                logger.debug(f"ReAct agent decided no response needed for {aggregated_signal.trigger.value} - user {user_id}")
+                logger.info(f"ℹ️ ReAct agent decided no response needed for {aggregated_signal.trigger.value} - user {user_id}")
             
         except Exception as e:
             logger.error(f"Error in ReAct agent orchestration for {aggregated_signal.trigger.value}: {e}")

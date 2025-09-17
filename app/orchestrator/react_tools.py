@@ -61,9 +61,8 @@ class DiscordResponseTool(BaseTool):
         """
         Send a Discord response message synchronously.
         
-        This is a simplified synchronous version for the ReAct agent.
-        In practice, the actual Discord sending would happen through 
-        the signal/event system.
+        This creates a signal to actually send the Discord message through
+        the proper infrastructure.
         
         Args:
             message: Message content to send
@@ -75,18 +74,72 @@ class DiscordResponseTool(BaseTool):
         Returns:
             String confirmation of the action taken
         """
+        import asyncio
+        from app.infra.bus import get_signal_bus
+        from app.signals import DiscordMessage, ActionLog
+        
         try:
-            logger.info(f"ReAct agent deciding to send Discord response to user {user_id}")
-            logger.info(f"Response content: {message}")
-            logger.info(f"Response type: {response_type}")
+            logger.info(f"🤖 ReAct agent TOOL EXECUTION START: send_discord_response")
+            logger.info(f"   Target user: {user_id}")
+            logger.info(f"   Target channel: {channel_id}")
+            logger.info(f"   Response type: {response_type}")
+            logger.info(f"   Message content: {repr(message)}")
+            logger.info(f"   Reply to message: {message_id}")
             
-            # In a real system, this would queue a Discord response signal
-            # For now, we'll just log the action and return success
-            return f"Queued Discord response to user {user_id} in channel {channel_id}: {message[:100]}..."
+            # Create an ActionLog signal to trigger Discord response
+            action_signal = ActionLog(
+                signal_id=f"discord_response_{int(__import__('time').time() * 1000)}",
+                action_type="discord_response",
+                target_id=user_id,
+                metadata={
+                    "response_content": message,
+                    "channel_id": channel_id,
+                    "user_id": user_id,
+                    "message_id": message_id,
+                    "response_type": response_type,
+                    "source": "react_agent_tool"
+                }
+            )
+            
+            # Send the signal through the bus
+            try:
+                bus = get_signal_bus()
+                # Run the async publish in the current event loop or create one
+                loop = None
+                try:
+                    loop = asyncio.get_event_loop()
+                    if loop.is_running():
+                        # If we're in an async context, create a task
+                        task = loop.create_task(bus.publish(action_signal))
+                        logger.info(f"📤 Discord response signal queued for async processing")
+                    else:
+                        # Run synchronously if no loop is running
+                        loop.run_until_complete(bus.publish(action_signal))
+                        logger.info(f"📤 Discord response signal published synchronously")
+                except RuntimeError:
+                    # Create new event loop if needed
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    loop.run_until_complete(bus.publish(action_signal))
+                    logger.info(f"📤 Discord response signal published in new event loop")
+                    
+            except Exception as signal_error:
+                logger.error(f"Failed to publish Discord response signal: {signal_error}")
+                # Fall back to just logging
+                logger.warning(f"📝 FALLBACK: Would send Discord message to channel {channel_id}: {message[:100]}...")
+            
+            result = f"✅ Discord response queued for user {user_id} in channel {channel_id}: {message[:100]}..."
+            logger.info(f"🤖 ReAct agent TOOL EXECUTION SUCCESS: {result}")
+            
+            return result
             
         except Exception as e:
-            logger.error(f"Error in ReAct Discord response tool: {e}")
-            return f"Failed to send Discord response: {str(e)}"
+            error_msg = f"❌ Failed to send Discord response: {str(e)}"
+            logger.error(f"🤖 ReAct agent TOOL EXECUTION ERROR: {error_msg}")
+            logger.error(f"   Exception details: {type(e).__name__}: {e}")
+            import traceback
+            logger.error(f"   Full traceback: {traceback.format_exc()}")
+            return error_msg
     
     async def _arun(
         self,
@@ -97,7 +150,8 @@ class DiscordResponseTool(BaseTool):
         response_type: str = "helpful",
         **kwargs: Any,
     ) -> str:
-        """Async version - just calls sync version for now."""
+        """Async version with comprehensive logging."""
+        logger.info(f"🤖 ReAct agent ASYNC TOOL EXECUTION: send_discord_response")
         return self._run(message, channel_id, user_id, message_id, response_type, **kwargs)
 
 

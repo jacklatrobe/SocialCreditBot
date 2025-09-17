@@ -44,6 +44,12 @@ class UserProfile:
     first_seen: Optional[datetime] = None
     last_seen: Optional[datetime] = None
     
+    # Social Credit Score (the overall "goodness" score)
+    social_credit_score: float = 100.0  # Start at neutral 100, range 0-200
+    
+    # Response Urgency Score (how urgently they need a response)
+    response_urgency_score: float = 0.0  # Range 0.0-1.0, higher = more urgent
+    
     # Classification aggregates
     purpose_counts: Dict[str, int] = field(default_factory=lambda: defaultdict(int))
     urgency_counts: Dict[str, int] = field(default_factory=lambda: defaultdict(int))
@@ -52,14 +58,19 @@ class UserProfile:
     
     # Recent activity (last 24 hours)
     recent_messages: deque = field(default_factory=lambda: deque(maxlen=50))
-    recent_urgency_score: float = 0.0
-    recent_toxicity_score: float = 0.0
+    recent_urgency_score: float = 0.0  # Legacy field, kept for compatibility
+    recent_toxicity_score: float = 0.0  # Legacy field, kept for compatibility
     
     # Response tracking
     last_response_sent: Optional[datetime] = None
     response_cooldown_until: Optional[datetime] = None
     unanswered_questions: int = 0
     unresolved_complaints: int = 0
+    
+    # Social Credit tracking
+    consecutive_good_messages: int = 0  # Non-toxic, non-spam messages
+    consecutive_bad_messages: int = 0   # Toxic or spam messages
+    times_helped: int = 0  # Number of times bot responded helpfully
     
     # Behavioral flags
     is_new_user: bool = True
@@ -183,7 +194,7 @@ class UserProfileAggregator:
     async def record_response_sent(self, user_id: str, response_signal: BaseSignal) -> None:
         """
         Record that a response was sent to a user, updating their profile
-        to reduce urgency and set cooldown period.
+        to reduce urgency and boost social credit for receiving help.
         
         Args:
             user_id: User who received the response
@@ -198,15 +209,23 @@ class UserProfileAggregator:
             profile.last_response_sent = now
             profile.response_cooldown_until = now + timedelta(minutes=self.response_cooldown_minutes)
             
-            # Reduce urgency scores after response
-            profile.recent_urgency_score *= 0.5  # Decay urgency by half
-            profile.unanswered_questions = max(0, profile.unanswered_questions - 1)
-            profile.unresolved_complaints = max(0, profile.unresolved_complaints - 1)
+            # Reset response urgency after helping the user
+            profile.response_urgency_score = 0.0
+            
+            # Boost social credit for receiving help (encourages positive behavior)
+            profile.social_credit_score = min(200, profile.social_credit_score + 2)
+            
+            # Reset consecutive message counters
+            profile.consecutive_good_messages = 0
+            profile.consecutive_bad_messages = 0
+            profile.unanswered_questions = 0
+            profile.unresolved_complaints = 0
             
             # Update profile in database
             await self._save_profile_to_db(profile)
             
-            logger.debug(f"Recorded response sent to user {user_id}, set cooldown until {profile.response_cooldown_until}")
+            logger.debug(f"Response sent to user {user_id}: reset urgency to {profile.response_urgency_score}, "
+                        f"boosted social credit to {profile.social_credit_score}, set cooldown until {profile.response_cooldown_until}")
             
         except Exception as e:
             logger.error(f"Error recording response sent to {user_id}: {e}")
@@ -251,7 +270,7 @@ class UserProfileAggregator:
         return profile
     
     async def _update_profile(self, profile: UserProfile, signal: DiscordMessage, classification: Dict[str, Any]) -> None:
-        """Update user profile with new message data."""
+        """Update user profile with new message data and social credit scoring."""
         now = datetime.now(timezone.utc)
         
         # Update basic stats
@@ -277,41 +296,146 @@ class UserProfileAggregator:
         }
         profile.recent_messages.append(message_summary)
         
-        # Update recent scores (weighted by recency)
+        # Update legacy scores (for backward compatibility)
         urgency_weight = self._get_urgency_weight(classification.get('urgency', 'low'))
         toxicity_weight = self._get_toxicity_weight(classification.get('toxicity', 'none'))
-        
-        # Decay existing scores and add new weighted scores
         profile.recent_urgency_score = (profile.recent_urgency_score * 0.9) + (urgency_weight * 0.1)
         profile.recent_toxicity_score = (profile.recent_toxicity_score * 0.9) + (toxicity_weight * 0.1)
         
-        # Update behavioral counters
-        purpose = classification.get('purpose', '').lower()
-        if purpose == 'question':
-            profile.unanswered_questions += 1
-        elif purpose == 'complaint':
-            profile.unresolved_complaints += 1
+        # === SOCIAL CREDIT SYSTEM UPDATE ===
+        await self._update_social_credit_score(profile, classification)
+        
+        # === RESPONSE URGENCY SYSTEM UPDATE ===
+        await self._update_response_urgency_score(profile, classification)
         
         # Update behavioral flags
         profile.is_new_user = profile.total_messages <= 5
         profile.is_frequent_questioner = profile.purpose_counts.get('question', 0) > 10
         profile.is_problematic_user = (
+            profile.social_credit_score < 70 or  # Low social credit
             profile.toxicity_counts.get('high', 0) > 3 or
             profile.recent_toxicity_score > 0.7
         )
         profile.requires_monitoring = (
             profile.is_problematic_user or 
             profile.unresolved_complaints > 2 or
-            profile.recent_urgency_score > 0.8
+            profile.response_urgency_score > 0.8  # High response urgency
         )
         
         # Save to database periodically
         if profile.total_messages % 10 == 0:  # Save every 10 messages
             await self._save_profile_to_db(profile)
     
+    async def _update_social_credit_score(self, profile: UserProfile, classification: Dict[str, Any]) -> None:
+        """
+        Update user's social credit score based on their message behavior.
+        
+        Social Credit Rules:
+        - Good messages (questions, non-toxic chat): +1 to +3 points
+        - Bad messages (toxic, spam): -5 to -15 points
+        - Range: 0-200, start at 100
+        """
+        purpose = classification.get('purpose', '').lower()
+        toxicity = classification.get('toxicity', 'none').lower()
+        message_type = classification.get('message_type', '').lower()
+        
+        credit_change = 0
+        
+        # Negative behaviors (decrease social credit)
+        if toxicity in ['severe', 'high']:
+            credit_change = -15
+            profile.consecutive_bad_messages += 1
+            profile.consecutive_good_messages = 0
+        elif toxicity in ['moderate', 'medium']:
+            credit_change = -8
+            profile.consecutive_bad_messages += 1
+            profile.consecutive_good_messages = 0
+        elif message_type == 'spam':
+            credit_change = -10
+            profile.consecutive_bad_messages += 1
+            profile.consecutive_good_messages = 0
+        else:
+            # Positive behaviors (increase social credit)
+            if purpose == 'question':
+                credit_change = 3  # Questions are valuable
+            elif purpose in ['greeting', 'social'] and toxicity == 'none':
+                credit_change = 1  # Friendly chat
+            elif toxicity == 'none':
+                credit_change = 2  # Any non-toxic message
+            
+            if credit_change > 0:
+                profile.consecutive_good_messages += 1
+                profile.consecutive_bad_messages = 0
+        
+        # Apply consecutive message bonuses/penalties
+        if profile.consecutive_good_messages > 5:
+            credit_change += 1  # Bonus for sustained good behavior
+        elif profile.consecutive_bad_messages > 3:
+            credit_change -= 2  # Additional penalty for sustained bad behavior
+        
+        # Update score with bounds checking
+        profile.social_credit_score = max(0.0, min(200.0, profile.social_credit_score + credit_change))
+        
+        logger.debug(f"Social credit for user {profile.user_id}: {credit_change:+d} -> {profile.social_credit_score:.1f}")
+    
+    async def _update_response_urgency_score(self, profile: UserProfile, classification: Dict[str, Any]) -> None:
+        """
+        Update user's response urgency score based on their immediate needs.
+        
+        Response Urgency Rules:
+        - Questions: Rapid increase (1-2 messages to trigger)
+        - Toxicity: Gradual increase (watch and wait)
+        - Good behavior: Decrease urgency
+        - Getting responses: Reset urgency
+        """
+        purpose = classification.get('purpose', '').lower()
+        toxicity = classification.get('toxicity', 'none').lower()
+        urgency = classification.get('urgency', 'low').lower()
+        
+        urgency_change = 0.0
+        
+        # Question handling - fast response
+        if purpose == 'question':
+            if profile.is_new_user:
+                urgency_change = 0.7  # New users get priority
+            else:
+                urgency_change = 0.5   # Regular users still get quick responses
+            profile.unanswered_questions += 1
+        
+        # Complaint handling - moderate response
+        elif purpose == 'complaint':
+            urgency_change = 0.4
+            profile.unresolved_complaints += 1
+        
+        # Toxicity handling - gradual increase (watch and wait)
+        elif toxicity in ['high', 'severe']:
+            urgency_change = 0.3  # Slower build-up for toxic behavior
+        elif toxicity in ['moderate', 'medium']:
+            urgency_change = 0.2
+        
+        # High urgency classification
+        elif urgency in ['high', 'critical']:
+            urgency_change = 0.6
+        
+        # Good behavior slightly reduces urgency
+        elif toxicity == 'none' and purpose in ['greeting', 'social']:
+            urgency_change = -0.1  # Small decrease for friendly behavior
+        
+        # Apply urgency change with decay
+        profile.response_urgency_score = max(0.0, min(1.0, 
+            profile.response_urgency_score * 0.95 + urgency_change  # Slight natural decay + new urgency
+        ))
+        
+        logger.debug(f"Response urgency for user {profile.user_id}: {urgency_change:+.2f} -> {profile.response_urgency_score:.2f}")
+    
     async def _evaluate_trigger_conditions(self, profile: UserProfile, signal: DiscordMessage, classification: Dict[str, Any]) -> Optional[ActionTrigger]:
         """
         Evaluate if this message should trigger the ReAct agent.
+        
+        Uses the new response urgency score system:
+        - Questions trigger quickly (1-2 messages)
+        - Toxicity builds slowly (watch and wait)
+        - Social credit influences thresholds
         
         Returns:
             ActionTrigger if agent should be invoked, None otherwise
@@ -325,43 +449,47 @@ class UserProfileAggregator:
         urgency = classification.get('urgency', 'low').lower()
         toxicity = classification.get('toxicity', 'none').lower()
         
-        # High-priority immediate triggers
+        # === PRIMARY TRIGGER LOGIC BASED ON RESPONSE URGENCY ===
+        
+        # Questions: Fast response threshold
+        if purpose == 'question':
+            question_threshold = 0.6 if profile.is_new_user else 0.7
+            if profile.response_urgency_score >= question_threshold:
+                return ActionTrigger.NEW_USER_QUESTION if profile.is_new_user else ActionTrigger.QUESTION
+        
+        # Complaints: Medium response threshold  
+        elif purpose == 'complaint':
+            if profile.response_urgency_score >= 0.5:
+                return ActionTrigger.COMPLAINT
+        
+        # Toxic behavior: Higher threshold (watch and wait)
+        elif toxicity in ['high', 'severe']:
+            toxic_threshold = 0.8
+            # Lower threshold for users with poor social credit
+            if profile.social_credit_score < 50:
+                toxic_threshold = 0.6
+            if profile.response_urgency_score >= toxic_threshold:
+                return ActionTrigger.TOXIC_ESCALATION
+        
+        # Critical urgency always triggers immediately
         if urgency == 'critical':
             return ActionTrigger.HIGH_URGENCY
-            
-        if purpose == 'complaint':
-            return ActionTrigger.COMPLAINT
-            
-        # Questions from new users get priority
-        if purpose == 'question' and profile.is_new_user:
-            return ActionTrigger.NEW_USER_QUESTION
-            
-        # Regular questions if not answered recently
-        if purpose == 'question' and profile.unanswered_questions >= 1:
-            return ActionTrigger.QUESTION
-            
-        # Toxic behavior escalation
-        if toxicity in ['high', 'severe'] or profile.recent_toxicity_score > 0.6:
-            return ActionTrigger.TOXIC_ESCALATION
-            
-        # High urgency accumulated over recent messages
-        if profile.recent_urgency_score > 0.7 and urgency in ['high', 'medium']:
+        
+        # High overall urgency based on accumulated score
+        if profile.response_urgency_score >= 0.9:
             return ActionTrigger.HIGH_URGENCY
-            
-        # Repeat issues from problematic users
-        if profile.requires_monitoring and urgency in ['high', 'medium']:
+        
+        # Repeat issues for users who need monitoring
+        if profile.requires_monitoring and profile.response_urgency_score >= 0.7:
             return ActionTrigger.REPEAT_ISSUE
         
         return None  # No trigger
     
     def _calculate_urgency_score(self, profile: UserProfile, classification: Dict[str, Any]) -> float:
-        """Calculate overall urgency score for prioritizing ReAct agent tasks."""
-        base_urgency = self._get_urgency_weight(classification.get('urgency', 'low'))
-        toxicity_boost = self._get_toxicity_weight(classification.get('toxicity', 'none')) * 0.3
-        profile_boost = profile.recent_urgency_score * 0.2
-        new_user_boost = 0.2 if profile.is_new_user else 0.0
-        
-        return min(1.0, base_urgency + toxicity_boost + profile_boost + new_user_boost)
+        """Calculate overall urgency score for prioritizing ReAct agent tasks (legacy method)."""
+        # Return the new response urgency score - this replaces the complex calculation
+        # and uses the improved scoring system implemented in _update_response_urgency_score
+        return profile.response_urgency_score
     
     def _get_urgency_weight(self, urgency: str) -> float:
         """Convert urgency level to numeric weight."""
@@ -392,8 +520,16 @@ class UserProfileAggregator:
             'is_new_user': profile.is_new_user,
             'is_frequent_questioner': profile.is_frequent_questioner,
             'is_problematic_user': profile.is_problematic_user,
+            'consecutive_good_messages': profile.consecutive_good_messages,
+            'consecutive_bad_messages': profile.consecutive_bad_messages,
             'unanswered_questions': profile.unanswered_questions,
             'unresolved_complaints': profile.unresolved_complaints,
+            
+            # New social credit system scores
+            'social_credit_score': profile.social_credit_score,
+            'response_urgency_score': round(profile.response_urgency_score, 3),
+            
+            # Legacy scores for backward compatibility
             'recent_urgency_score': round(profile.recent_urgency_score, 2),
             'recent_toxicity_score': round(profile.recent_toxicity_score, 2),
             'primary_purpose': max(profile.purpose_counts, key=profile.purpose_counts.get) if profile.purpose_counts else 'unknown'
@@ -421,6 +557,8 @@ class UserProfileAggregator:
             'timespan_hours': 24,  # Recent messages are from last 24 hours
             'dominant_purpose': max(recent_purposes, key=recent_purposes.get) if recent_purposes else 'unknown',
             'urgent_message_count': recent_urgencies.get('high', 0) + recent_urgencies.get('critical', 0),
+            'questions_count': recent_purposes.get('question', 0),
+            'complaints_count': recent_purposes.get('complaint', 0),
             'last_message_time': profile.recent_messages[-1]['timestamp'].isoformat() if profile.recent_messages else None
         }
     

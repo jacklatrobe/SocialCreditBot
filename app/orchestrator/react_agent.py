@@ -128,6 +128,24 @@ async def call_orchestration_model(
                 logger.info(f"First message content preview: {messages[0].content[:200]}...")
             response = cast(AIMessage, await model.ainvoke(conversation))
             logger.info(f"Model response received successfully")
+            
+            # Log detailed response information
+            logger.info(f"🧠 LLM RESPONSE ANALYSIS:")
+            logger.info(f"   Response ID: {getattr(response, 'id', 'no-id')}")
+            logger.info(f"   Response type: {type(response).__name__}")
+            if hasattr(response, 'content') and response.content:
+                logger.info(f"   Content length: {len(response.content)}")
+                logger.info(f"   Content preview: {repr(response.content[:200])}")
+            if hasattr(response, 'tool_calls') and response.tool_calls:
+                logger.info(f"   Tool calls requested: {len(response.tool_calls)}")
+                for i, tool_call in enumerate(response.tool_calls):
+                    tool_name = tool_call.get('name', 'unknown')
+                    tool_args = tool_call.get('args', {})
+                    logger.info(f"     Tool call {i+1}: {tool_name}")
+                    logger.info(f"       Arguments: {tool_args}")
+            else:
+                logger.info(f"   Tool calls: NONE (agent decided no action needed)")
+                
         except Exception as model_error:
             logger.error(f"Error during model invocation: {model_error}")
             logger.error(f"Model invocation error type: {type(model_error)}")
@@ -138,6 +156,9 @@ async def call_orchestration_model(
         
         # Handle max steps reached
         if state.is_last_step and response.tool_calls:
+            logger.warning(f"Maximum reasoning steps reached. Response had {len(response.tool_calls)} tool calls that will not be executed")
+            for i, tool_call in enumerate(response.tool_calls):
+                logger.warning(f"  Tool call {i+1}: {tool_call.get('name', 'unknown')} - {tool_call}")
             return {
                 "messages": [
                     AIMessage(
@@ -146,6 +167,17 @@ async def call_orchestration_model(
                     )
                 ]
             }
+        
+        # Log the model response details
+        logger.info(f"Model response received - has_tool_calls: {bool(response.tool_calls)}")
+        if response.tool_calls:
+            logger.info(f"Model wants to execute {len(response.tool_calls)} tool(s):")
+            for i, tool_call in enumerate(response.tool_calls):
+                tool_name = tool_call.get('name', 'unknown')
+                tool_args = tool_call.get('args', {})
+                logger.info(f"  Tool {i+1}: {tool_name} with args: {tool_args}")
+        else:
+            logger.info(f"Model response (no tools): {response.content[:200]}...")
         
         # Return the model's response
         return {"messages": [response]}
@@ -182,7 +214,6 @@ def _format_classification_for_prompt(
     confidence = classification.get('confidence', 0.0)
     sentiment = classification.get('sentiment', 'neutral')
     toxicity_raw = classification.get('toxicity', 0.0)
-    requires_response = classification.get('requires_response', False)
     
     # Handle toxicity - convert 'none' string to 0.0
     if isinstance(toxicity_raw, str):
@@ -217,7 +248,6 @@ def _format_classification_for_prompt(
 - **Confidence**: {confidence:.2f}
 - **Sentiment**: {sentiment}  
 - **Toxicity Level**: {toxicity:.2f}
-- **Requires Response**: {requires_response}
 
 ## Message Context
 - **User ID**: {user_id}
@@ -225,7 +255,7 @@ def _format_classification_for_prompt(
 - **Content**: "{message_content}"
 
 ## Your Decision
-Based on this classification, should we respond to this message? If yes, what type of response is appropriate?
+Based on this classification and the aggregation trigger that brought this to your attention, should we respond to this message? If yes, what type of response is appropriate?
 
 Use the `send_discord_response` tool if you decide a response is warranted, or explain why no response is needed."""
         logger.info("F-string prompt formatted successfully")
@@ -233,7 +263,7 @@ Use the `send_discord_response` tool if you decide a response is warranted, or e
     except Exception as fstring_error:
         logger.error(f"Error in f-string formatting: {fstring_error}")
         logger.error(f"Variables: message_type={message_type}, confidence={confidence}, sentiment={sentiment}, toxicity={toxicity}")
-        logger.error(f"Variables: requires_response={requires_response}, user_id={user_id}, channel_id={channel_id}")
+        logger.error(f"Variables: user_id={user_id}, channel_id={channel_id}")
         logger.error(f"Variables: message_content={repr(message_content)}")
         raise
 
@@ -254,9 +284,16 @@ def route_orchestration_output(state: OrchestrationState) -> Literal["__end__", 
         logger.error(f"Expected AIMessage, got {type(last_message).__name__}")
         return "__end__"
     
-    # If no tool calls, we're done
+    # Log routing decision
     if not last_message.tool_calls:
+        logger.info("No tool calls in response - ending orchestration workflow")
         return "__end__"
+    
+    # Log tool execution decision
+    logger.info(f"Routing to tools node to execute {len(last_message.tool_calls)} tool call(s)")
+    for i, tool_call in enumerate(last_message.tool_calls):
+        tool_name = tool_call.get('name', 'unknown')
+        logger.info(f"  Will execute tool {i+1}: {tool_name}")
     
     # Execute the requested tools
     return "tools"
