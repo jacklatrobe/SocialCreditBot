@@ -48,6 +48,95 @@ class DiscordResponseInput(BaseModel):
     response_content: str = Field(description="The message content to send to Discord")
 
 
+class KnowledgebaseInput(BaseModel):
+    """Input schema for knowledgebase query tool."""
+    query: str = Field(description="The search query to find relevant knowledge")
+
+
+# Simple knowledgebase - replace these strings with your actual knowledge content
+KNOWLEDGEBASE_ENTRIES = [
+    "DayZ is a survival game where players must find food, water, and shelter while avoiding zombies and other players.",
+    "DayZ servers reset loot spawns periodically, so check back at locations if you don't find items initially.",
+    "In DayZ, always carry bandages or rags to stop bleeding from zombie attacks or player encounters.",
+    "Social credit scores are earned by helping other players and being positive in chat.",
+    "Social credit scores are reduced by toxic behavior, griefing, or spam messages.",
+    "Users with low social credit scores may need additional guidance and support.",
+    "The bot responds to questions, complaints, and situations requiring moderation.",
+    "Users can ask about game mechanics, server rules, or general help topics.",
+    "Response cooldowns prevent spam and give users time to read previous responses.",
+    "High toxicity messages are handled by automated moderation systems.",
+]
+
+
+class KnowledgebaseTool(BaseTool):
+    """
+    Simple knowledgebase tool that searches through predefined knowledge entries.
+    
+    This tool allows the ReAct agent to query a knowledgebase for relevant information
+    to help answer user questions or provide context for responses.
+    """
+    
+    name: str = "knowledgebase"
+    description: str = """
+    Query the knowledgebase for relevant information. Use this tool to find knowledge
+    about game mechanics, rules, social credit system, or other topics that might
+    help you provide better responses to users.
+    
+    Parameters:
+    - query: A search term or question to find relevant knowledge entries
+    """
+    
+    args_schema: Type[BaseModel] = KnowledgebaseInput
+    
+    async def _run(
+        self,
+        query: str,
+        **kwargs: Any,
+    ) -> str:
+        """
+        Search the knowledgebase for relevant entries.
+        
+        Args:
+            query: Search query string
+            
+        Returns:
+            String containing matching knowledge entries
+        """
+        try:
+            logger.info(f"🔍 Knowledgebase query: {repr(query)}")
+            
+            # Simple string matching - convert query to lowercase for case-insensitive search
+            query_lower = query.lower()
+            matching_entries = []
+            
+            for entry in KNOWLEDGEBASE_ENTRIES:
+                # Check if any word in the query appears in the entry
+                if any(word in entry.lower() for word in query_lower.split()):
+                    matching_entries.append(entry)
+            
+            if matching_entries:
+                result = "Found relevant knowledge:\n" + "\n".join(f"• {entry}" for entry in matching_entries)
+                logger.info(f"📚 Knowledgebase found {len(matching_entries)} entries for: {query}")
+            else:
+                result = f"No knowledge found for query: {query}"
+                logger.info(f"📚 Knowledgebase found no entries for: {query}")
+            
+            return result
+            
+        except Exception as e:
+            error_msg = f"❌ Knowledgebase query failed: {str(e)}"
+            logger.error(f"🔍 Knowledgebase ERROR: {error_msg}")
+            return error_msg
+    
+    async def _arun(
+        self,
+        query: str,
+        **kwargs: Any,
+    ) -> str:
+        """Async version of knowledgebase query."""
+        return await self._run(query, **kwargs)
+
+
 class DiscordResponseTool(BaseTool):
     """
     LangChain tool that wraps our DiscordResponderTool for the ReAct agent.
@@ -156,4 +245,4 @@ class DiscordResponseTool(BaseTool):
 
 
 # List of available tools for the ReAct agent
-ORCHESTRATOR_TOOLS = [DiscordResponseTool()]
+ORCHESTRATOR_TOOLS = [DiscordResponseTool(), KnowledgebaseTool()]

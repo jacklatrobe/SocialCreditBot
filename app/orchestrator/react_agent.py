@@ -50,8 +50,7 @@ def load_chat_model(model_name: str) -> ChatOpenAI:
     
     return ChatOpenAI(
         model=model,
-        api_key=settings.llm_api_key,
-        temperature=1.0,  # GPT-5 only supports default temperature value of 1.0
+        api_key=settings.llm_api_key
     )
 
 
@@ -238,26 +237,41 @@ def _format_classification_for_prompt(
         channel_id = discord_msg.get('channel_id', 'unknown')
         message_content = discord_msg.get('content', '')
     
+    # Get social credit score from context or signal
+    social_credit_score = context.get('social_credit_score', 'unknown')
+    if social_credit_score == 'unknown' and signal and hasattr(signal, 'author'):
+        social_credit_score = signal.author.get('social_credit_score', 'unknown')
+    
     # Build the prompt using f-string to avoid format() conflicts
     try:
         logger.info("About to format prompt with f-string")
-        prompt = f"""Please analyze this classified Discord message and decide if a response is needed:
+        prompt = f"""Analyze this Discord message and decide if you should respond.
 
 ## Message Classification
 - **Type**: {message_type}
-- **Confidence**: {confidence:.2f}
 - **Sentiment**: {sentiment}  
 - **Toxicity Level**: {toxicity:.2f}
 
-## Message Context
+## User Information
 - **User ID**: {user_id}
+- **Social Credit Score**: {social_credit_score}
 - **Channel ID**: {channel_id}
-- **Content**: "{message_content}"
+- **Message**: "{message_content}"
 
-## Your Decision
-Based on this classification and the aggregation trigger that brought this to your attention, should we respond to this message? If yes, what type of response is appropriate?
+## Your Instructions
+You can only respond to humans via the `send_discord_response` tool. 
 
-Use the `send_discord_response` tool if you decide a response is warranted, or explain why no response is needed."""
+**Decision Rules:**
+- Send ONE message if relevant using the tool
+- After sending or deciding not to send, end immediately with EXACTLY one of:
+  - "Message sent"
+  - "No message sent - [brief reason]"
+
+**Available Tools:**
+- `send_discord_response`: Send a Discord message to the user
+- `knowledgebase`: Query the knowledge base for information
+
+Make your decision and take action now."""
         logger.info("F-string prompt formatted successfully")
         return prompt
     except Exception as fstring_error:
