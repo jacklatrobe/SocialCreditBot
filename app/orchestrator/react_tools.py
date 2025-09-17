@@ -55,9 +55,12 @@ class KnowledgebaseInput(BaseModel):
 
 # Simple knowledgebase - replace these strings with your actual knowledge content
 KNOWLEDGEBASE_ENTRIES = [
+    # Core DayZ basics
     "DayZ is a survival game where players must find food, water, and shelter while avoiding zombies and other players.",
-    "DayZ servers reset loot spawns periodically, so check back at locations if you don't find items initially.",
+    "DayZ servers use the Central Loot Economy (CLE), so items despawn and respawn over time; if you don’t find an item, check back later.",
     "In DayZ, always carry bandages or rags to stop bleeding from zombie attacks or player encounters.",
+
+    # Moderation / bot behavior (retain from pilot)
     "Social credit scores are earned by helping other players and being positive in chat.",
     "Social credit scores are reduced by toxic behavior, griefing, or spam messages.",
     "Users with low social credit scores may need additional guidance and support.",
@@ -65,6 +68,75 @@ KNOWLEDGEBASE_ENTRIES = [
     "Users can ask about game mechanics, server rules, or general help topics.",
     "Response cooldowns prevent spam and give users time to read previous responses.",
     "High toxicity messages are handled by automated moderation systems.",
+
+    # Refer-a-Friend program
+    "Refer-a-Friend: players may refer an unlimited number of friends; both accounts must have 10+ hours played on the server.",
+    "Refer-a-Friend rewards: referrer receives $200,000; the referred friend receives $150,000.",
+    "To claim a referral, open a support ticket in #make-a-ticket and include both players’ in-game names and Steam64 IDs (admins can help locate these).",
+    "Referral board resets each wipe; after a wipe you may re-refer friends who were previously referred.",
+
+    # Starter kit & quality-of-life
+    "Each player gets one starter kit per wipe; press ‘L’ in-game to claim it while in a safe area.",
+    "Windows troubleshooting: press Win+R, open %localappdata%/DayZ, and you may delete folders like ‘crash-<year>’, ‘DayZ-X64’, and ‘Script’—do NOT delete all files.",
+    "If issues persist after troubleshooting, open a support ticket and an admin will assist.",
+
+    # The Wrench item
+    "Item ‘Wrench’: flips a vehicle back onto its wheels and can nudge a stuck vehicle (sometimes); available at the General Trader.",
+    "Recommendation: store a Wrench in your vehicle so you can recover from flips or minor terrain/fence snags.",
+
+    # In-game drug crafting (mod—gameplay only)
+    "In-game drug-making guide (mod only, not real): see the Recipes & Crafting Notion page provided by the server.",
+
+    # Workstations & tools (mod)
+    "Most workstations and similar tools have a Kit version for easy placement; they can typically be dismantled back into a Kit using a Screwdriver.",
+    "Static workstation variants cannot be moved; the non-static Pill Press cannot be dismantled but can be picked up and placed on solid surfaces.",
+    "Lab Station: used for meth manufacturing; each craft carries a chance of a theatrical ‘chemical explosion’ that KOs the player for ~30s but still completes the batch.",
+    "Production Table: used for packaging higher-tier products and crafting bricks.",
+    "Pill Press: used for Ecstasy manufacturing per the server’s guide.",
+    "Chemical Barrel (cocaine manufacturing): attach 8 coca leaves (all dried or all fresh), 1 Sulfuric Acid, 1 Gasoline Jerry Can, and use Baking Soda as the required tool.",
+    "Chemical Barrel yields: dried coca leaves produce a larger output than fresh leaves.",
+    "Opium recipes (Chemical Barrel): 3×10 Opium + Acetic Anhydride + Gasoline (Jerry Can as tool) = Black Tar Heroin Knots; add Baking Soda to produce Brown Heroin Piles.",
+    "Production Table—brick recipes: 2×10 Brown Heroin Piles + Duct Tape = 1 Brick of Brown; 5×10 Black Tar + Duct Tape = 1 Brick of Black Tar; 2×10 Fentanyl Piles + Duct Tape = 1 Brick of Fentanyl.",
+    "Grow Tent: single-slot portable cultivation; dismantle to a Kit with a Screwdriver.",
+    "Grow Pot: single-slot portable cultivation; dismantle to a Kit with a Screwdriver.",
+    "Drying Rack: 24 slots for cannabis bud branches and 8 slots for coca leaves; default drying time is 10 minutes; dried items drop to the ground below—stay nearby to collect.",
+    "Storage Pallet: visualizes your stack of bricks via many attachment slots; provides no cargo capacity.",
+
+    # Reporting players / rule breaks
+    "To report a player or rule break, open a ticket and select ‘report a player’; do not discuss incidents publicly in chat or Discord.",
+    "Set up gameplay recording per #recording-recommendation; video evidence significantly improves admin ability to help; without video, assistance may be limited.",
+    "Use the suggestions channel, community discussions, or DM for feedback; persistent negativity or attempts to discourage play may result in bans.",
+
+    # Raid alarm system
+    "Raid Alarm: assemble three required components with other players to build a tower that alerts your private Discord group (pings optional).",
+    "Only the player who set up the Raid Alarm can access the edit menu or dismantle the tower; the item includes an in-game setup help button.",
+
+    # Economy, vendors, events, and world features (current state)
+    "Daily rewards now include a chance to win cash (e.g., $100k or $500k).",
+    "ATMs are active across the map and can be robbed for $50k–$300k; paychecks are enabled.",
+    "Vendors: magazines larger than 30-round cannot be purchased; purchasable attachments are limited to Tier 1–2.",
+    "Armor and helmet systems have been reworked; updated vests and helmets display clearer tier labels.",
+    "A new helicopter has been added.",
+    "Town stashes are widely distributed (roughly 10–20 per town) with unique loot.",
+    "Gold content: gold safes/stashes are active; the Gold Vendor is available; secure container upgrades can be purchased at the Gold Vendor.",
+    "Softsiding raiding is enabled.",
+    "Killfeed changes: Discord killfeed removed (trial); an obscured in-game killfeed is enabled (trial).",
+    "Weather & lighting: darker nights have returned; weather is closer to natural.",
+    "Store robberies: cash registers can be robbed using a screwdriver or a hammer.",
+    "Weapon balance updates: .357 damage reduced; 5.56×45 damage increased for more consistent PvP.",
+    "KOTH events are re-added (WIP) and KOTH chest capacity is increased (+20 gun slots).",
+
+    # Recent fixes and maintenance highlights
+    "Recent maintenance included fixes to medical spawn rates, stamina, building allowance, vendor issues, NBC quest, and multiple Cement Mixer placement issues.",
+    "Keys & key rooms: key rooms have been added at Hrabice and Overgrown; lootable shirts/jackets nearby can spawn keys; keys now indicate their usable location.",
+    "‘Drug Runners’ activity provides a new way to make money (e.g., via odd pill-related tasks).",
+
+    # Medical system (concise, complete lookups)
+    "First Aid Kits: MFAK (8×30 HP), AFAK (6×25 HP), IFAK (4×20 HP), Grizzly (8×20 HP), Saleva (4×15 HP), CarKit (2×15 HP), Ai2 (1×10 HP).",
+    "Hemostatics: EME (6 uses, ×6 faster than vanilla bandage), Calok-B (3, ×5), Army BD (2, ×3), CAT (1, ×8), Esmarch (1, ×8), B-2U (2, ×2), BD-8 (8, normal), BD-10 (10, normal), BD-12 (12, normal).",
+    "Medical—Other: Golden Star (10 uses; shock-damage invulnerability 10 min), Ibuprofen (15; 8 min), Vaselin (6; 5 min), Augmentin (1; cures all diseases), Ololo (50; boosts immunity), AquaTabs (25; purifies water), Analgin (12; cold relief + shock invulnerability 3 min).",
+    "Surgical & Splints: Surv12 (15 uses; fixes broken bones, removes all bleeding, +10 HP), CMS Kit (5 uses; fixes broken bones, removes all bleeding, +10 HP), Splint and AlumSplint treat leg fractures.",
+    "Injectors: Morphine (3 min), Adrenaline (3 min), NorAdrenaline (morphine + adrenaline for 3 min), Zagustin (treats all bleeding), Meldonin (treats bleeding + blood recovery), Propital (1 HP/s for 120 s + analgesic), PNB-16 (1 HP/s for 120 s + +500 hydration and energy), ETG Change (4 HP/s for 30 s), Obdolbos V1 (20 HP instantly + 3 HP/s for 10 s + NorAdrenaline + +500 hydration/energy/blood), Obdolbos V2 (30 HP instantly + 5 HP/s for 10 s + NorAdrenaline + +1000 hydration/energy/blood), BoneRepair (quick bone healing), SJ-1 (stamina recovery ×1.8 for 8 min), SJ-6 (×2.5 for 10 min), SJ-9 (×3.5 for 15 min), SJ-12 (×5.0 for 15 min), Perfotoran (treats POX + removes bleeding), AHF1M (25 HP instantly + removes bleeding), Zakusil (+5000 hydration & energy), P22 (regenerates 50% of current HP + analgesic 5 min), xTG-12 (heals all diseases).",
 ]
 
 
