@@ -82,7 +82,7 @@ class OrchestrationContext:
     )
     
     model: Annotated[str, {"__template_metadata__": {"kind": "llm"}}] = field(
-        default="openai/gpt-5-nano",
+        default="openai/gpt-5-mini",
         metadata={
             "description": "The OpenAI model to use for orchestration decisions. Should be in format: provider/model-name"
         }

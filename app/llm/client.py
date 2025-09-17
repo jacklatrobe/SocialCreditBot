@@ -62,7 +62,7 @@ class ClassificationResult:
 @dataclass
 class LLMConfig:
     """Configuration for LLM operations."""
-    model: str = "gpt-4o-mini"
+    model: str = "gpt-5-nano"
     max_tokens: int = 1000
     temperature: float = 1.0
     top_p: float = 0.9
