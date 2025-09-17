@@ -64,7 +64,6 @@ class LLMConfig:
     """Configuration for LLM operations."""
     model: str = "gpt-4o-mini"
     max_tokens: int = 1000
-    temperature: float = 0.3
     top_p: float = 0.9
     frequency_penalty: float = 0.1
     presence_penalty: float = 0.1
@@ -259,7 +258,6 @@ class OpenAILLMClient:
                 model=self.config.model,
                 messages=messages,
                 max_tokens=self.config.max_tokens,
-                temperature=self.config.temperature,
                 top_p=self.config.top_p,
                 frequency_penalty=self.config.frequency_penalty,
                 presence_penalty=self.config.presence_penalty,
