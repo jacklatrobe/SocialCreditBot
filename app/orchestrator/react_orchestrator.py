@@ -167,6 +167,7 @@ class ReactMessageOrchestrator:
         """
         try:
             self._stats['messages_received'] += 1
+            logger.info(f"🔄 ReAct orchestrator received classified signal: {message.message_id}")
             
             # Extract the classified signal data
             signal_data = message.data.get('classified_signal')
@@ -347,13 +348,14 @@ class ReactMessageOrchestrator:
             
             logger.info(f"Running ReAct agent for {aggregated_signal.trigger.value} - user {user_id} (urgency: {aggregated_signal.urgency_score:.2f})")
             
-            # Enhance context with aggregation data
+            # Enhance context with aggregation data including conversation history
             enhanced_context = {
                 **original_signal.context,
                 'aggregation_trigger': aggregated_signal.trigger.value,
                 'urgency_score': aggregated_signal.urgency_score,
                 'user_profile': aggregated_signal.context['profile_summary'],
                 'recent_activity': aggregated_signal.context['recent_activity'],
+                'conversation_history': aggregated_signal.context.get('conversation_history', []),  # Add conversation context
                 'trigger_reason': f"User behavior triggered {aggregated_signal.trigger.value} rule"
             }
             
@@ -369,6 +371,11 @@ class ReactMessageOrchestrator:
             logger.info(f"   Signal type: {type(original_signal).__name__}")
             logger.info(f"   Classification data: {classification}")
             logger.info(f"   Enhanced context keys: {list(enhanced_context.keys())}")
+            
+            # Set execution context for tools to access
+            from app.orchestrator.react_tools import set_execution_context
+            set_execution_context(original_signal, enhanced_context)
+            logger.info(f"   Execution context set for ReAct agent tools")
             
             # Run the ReAct agent
             result = await self._agent_graph.ainvoke(
@@ -436,10 +443,15 @@ class ReactMessageOrchestrator:
             else:
                 self._stats['no_action_decisions'] += 1
                 logger.info(f"ℹ️ ReAct agent decided no response needed for {aggregated_signal.trigger.value} - user {user_id}")
-            
+                
         except Exception as e:
             logger.error(f"Error in ReAct agent orchestration for {aggregated_signal.trigger.value}: {e}")
             self._stats['errors'] += 1
+        finally:
+            # Always clear execution context after processing
+            from app.orchestrator.react_tools import clear_execution_context
+            clear_execution_context()
+            logger.info(f"   Execution context cleared after ReAct agent processing")
     
     def get_stats(self) -> Dict[str, Any]:
         """Get orchestrator statistics."""

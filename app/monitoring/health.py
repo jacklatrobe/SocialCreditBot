@@ -94,7 +94,7 @@ class HealthChecker:
         - Minimal side effects
         """
         logger = logging.getLogger(__name__)
-        logger.info("🔍 Starting comprehensive health check...")
+        logger.debug("🔍 Starting comprehensive health check...")
         
         components = {}
         
@@ -110,7 +110,7 @@ class HealthChecker:
         ]
         
         try:
-            logger.info("🔍 Running health checks for 7 components...")
+            logger.debug("🔍 Running health checks for 7 components...")
             results = await asyncio.gather(*health_checks, return_exceptions=True)
             
             component_names = ["system", "database", "signal_bus", "background_tasks", "llm", "orchestrator", "training_data"]
@@ -120,7 +120,8 @@ class HealthChecker:
                 
                 if isinstance(result, ComponentHealth):
                     components[result.name] = result
-                    logger.info(f"✅ {component_name} health check: {result.status} - {result.message}")
+                    # Only log individual component status at debug level to reduce verbosity
+                    logger.debug(f"✅ {component_name} health check: {result.status} - {result.message}")
                 elif isinstance(result, Exception):
                     # Handle individual component failures gracefully
                     error_msg = f"Health check failed: {str(result)}"
@@ -144,14 +145,19 @@ class HealthChecker:
         
         # Determine overall system status
         overall_status = self._determine_overall_status(components)
-        logger.info(f"🏥 Overall system health: {overall_status}")
         
-        # Log component summary
+        # Count component statuses
         healthy_count = sum(1 for c in components.values() if c.status == HealthStatus.HEALTHY)
         degraded_count = sum(1 for c in components.values() if c.status == HealthStatus.DEGRADED)  
         unhealthy_count = sum(1 for c in components.values() if c.status == HealthStatus.UNHEALTHY)
         
-        logger.info(f"📊 Health summary: {healthy_count} healthy, {degraded_count} degraded, {unhealthy_count} unhealthy")
+        # Only log overall status if it's not healthy (status change) or at debug level
+        if overall_status != HealthStatus.HEALTHY:
+            logger.warning(f"🏥 Overall system health: {overall_status}")
+            logger.warning(f"📊 Health summary: {healthy_count} healthy, {degraded_count} degraded, {unhealthy_count} unhealthy")
+        else:
+            logger.debug(f"🏥 Overall system health: {overall_status}")
+            logger.debug(f"📊 Health summary: {healthy_count} healthy, {degraded_count} degraded, {unhealthy_count} unhealthy")
         
         return SystemHealth(
             status=overall_status,
@@ -235,11 +241,10 @@ class HealthChecker:
                 os.makedirs(os.path.dirname(db_path), exist_ok=True)
                 # Database constructor expects just the path, not the full URL
                 self._db_manager = Database(db_path)
+                # Only initialize once when creating the db_manager
+                await self._db_manager.initialize()
             
-            # Test basic database operations
-            await self._db_manager.initialize()
-            
-            # Simple query to test connectivity
+            # Test basic database operations without reinitializing
             async with self._db_manager.get_session() as session:
                 # Test query - just check if we can execute SQL
                 from sqlalchemy import text
@@ -279,8 +284,20 @@ class HealthChecker:
         start_time = time.time()
         
         try:
+            # Use the global signal bus instance instead of creating a new one
             if not self._signal_bus:
-                self._signal_bus = SignalBus()
+                from app.infra.bus import get_signal_bus
+                try:
+                    self._signal_bus = get_signal_bus()  # Use the global singleton
+                except Exception:
+                    # Signal bus not initialized, skip this check
+                    return ComponentHealth(
+                        name="Signal Bus",
+                        status=HealthStatus.UNHEALTHY,
+                        message="Signal bus not initialized",
+                        response_time_ms=int((time.time() - start_time) * 1000),
+                        details={"error": "Signal bus not available"}
+                    )
             
             # Test signal bus by creating and publishing a test message
             test_message = BusMessage(
@@ -292,9 +309,15 @@ class HealthChecker:
                 correlation_id=None
             )
             
-            # Start signal bus if not running
+            # The signal bus should already be running - don't try to start it again
             if not self._signal_bus.running:
-                await self._signal_bus.start()
+                return ComponentHealth(
+                    name="Signal Bus",
+                    status=HealthStatus.UNHEALTHY,
+                    message="Signal bus is not running",
+                    response_time_ms=int((time.time() - start_time) * 1000),
+                    details={"running": False}
+                )
             
             # Test publishing (this should not raise exceptions)
             await self._signal_bus.publish(
@@ -437,9 +460,20 @@ class HealthChecker:
         start_time = time.time()
         
         try:
+            # Use the global orchestrator instance instead of creating a new one
             if not self._orchestrator:
-                # MessageOrchestrator only takes max_concurrent_tasks parameter
-                self._orchestrator = MessageOrchestrator(max_concurrent_tasks=5)
+                from app.orchestrator.core import get_orchestrator
+                try:
+                    self._orchestrator = await get_orchestrator()  # Use the global singleton
+                except Exception:
+                    # Orchestrator not initialized, skip this check
+                    return ComponentHealth(
+                        name="Orchestrator",
+                        status=HealthStatus.UNHEALTHY,
+                        message="Orchestrator not initialized",
+                        response_time_ms=int((time.time() - start_time) * 1000),
+                        details={"error": "Orchestrator not available"}
+                    )
             
             # Check if orchestrator is properly initialized with aggregator
             # The orchestrator now uses an aggregation-based rules engine instead of static rules

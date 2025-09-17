@@ -142,9 +142,11 @@ class UserProfileAggregator:
         """
         try:
             self._stats['messages_processed'] += 1
+            logger.info(f"📊 Aggregator processing signal {signal.signal_id} from {signal.author.get('username', 'unknown') if hasattr(signal, 'author') else 'unknown'}")
             
             # Extract message details
             if not isinstance(signal, DiscordMessage):
+                logger.warning(f"Signal {signal.signal_id} is not a DiscordMessage, skipping aggregation")
                 return None
                 
             user_id = signal.author.get('user_id')
@@ -172,6 +174,9 @@ class UserProfileAggregator:
             if trigger:
                 self._stats['triggers_generated'] += 1
                 
+                # Build conversation context from recent messages
+                conversation_context = self._build_conversation_context(profile)
+                
                 return AggregatedSignal(
                     user_id=user_id,
                     trigger=trigger,
@@ -179,7 +184,8 @@ class UserProfileAggregator:
                     context={
                         'profile_summary': self._get_profile_summary(profile),
                         'recent_activity': self._get_recent_activity_summary(profile),
-                        'classification': classification
+                        'conversation_history': conversation_context,  # Add conversation history
+                        'classification': self._clean_classification(classification)  # Clean legacy fields
                     },
                     original_signal=signal,
                     profile=profile
@@ -209,8 +215,8 @@ class UserProfileAggregator:
             profile.last_response_sent = now
             profile.response_cooldown_until = now + timedelta(minutes=self.response_cooldown_minutes)
             
-            # Reset response urgency after helping the user
-            profile.response_urgency_score = 0.0
+            # Reduce response urgency after helping the user
+            profile.response_urgency_score = profile.response_urgency_score * 0.75
             
             # Boost social credit for receiving help (encourages positive behavior)
             profile.social_credit_score = min(200, profile.social_credit_score + 2)
@@ -397,25 +403,25 @@ class UserProfileAggregator:
         # Question handling - fast response
         if purpose == 'question':
             if profile.is_new_user:
-                urgency_change = 0.7  # New users get priority
+                urgency_change += 0.9  # New users get priority
             else:
-                urgency_change = 0.5   # Regular users still get quick responses
+                urgency_change += 0.7   # Regular users still get quick responses
             profile.unanswered_questions += 1
         
         # Complaint handling - moderate response
         elif purpose == 'complaint':
-            urgency_change = 0.4
+            urgency_change += 0.4
             profile.unresolved_complaints += 1
         
         # Toxicity handling - gradual increase (watch and wait)
         elif toxicity in ['high', 'severe']:
-            urgency_change = 0.3  # Slower build-up for toxic behavior
+            urgency_change = 0.4  # Slower build-up for toxic behavior
         elif toxicity in ['moderate', 'medium']:
-            urgency_change = 0.2
+            urgency_change = 0.1
         
         # High urgency classification
         elif urgency in ['high', 'critical']:
-            urgency_change = 0.6
+            urgency_change = 0.8
         
         # Good behavior slightly reduces urgency
         elif toxicity == 'none' and purpose in ['greeting', 'social']:
@@ -511,6 +517,52 @@ class UserProfileAggregator:
             'none': 0.0
         }
         return weights.get(toxicity.lower(), 0.0)
+    
+    def _build_conversation_context(self, profile: UserProfile, max_messages: int = 10) -> List[Dict[str, Any]]:
+        """
+        Build conversation history context from user's recent messages.
+        
+        Args:
+            profile: User profile containing recent messages
+            max_messages: Maximum number of recent messages to include
+            
+        Returns:
+            List of message contexts with content, timestamp, and classification
+        """
+        conversation = []
+        
+        # Get the most recent messages, up to max_messages
+        recent_messages = list(profile.recent_messages)[-max_messages:] if profile.recent_messages else []
+        
+        for msg_data in recent_messages:
+            conversation.append({
+                'timestamp': msg_data.get('timestamp', '').isoformat() if hasattr(msg_data.get('timestamp', ''), 'isoformat') else str(msg_data.get('timestamp', '')),
+                'content': msg_data.get('content', ''),
+                'classification': msg_data.get('classification', {}),
+                'signal_id': msg_data.get('signal_id', '')
+            })
+        
+        return conversation
+    
+    def _clean_classification(self, classification: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Remove legacy classification fields that shouldn't influence the ReAct agent.
+        
+        Args:
+            classification: Raw classification data
+            
+        Returns:
+            Cleaned classification without legacy fields
+        """
+        cleaned = classification.copy()
+        
+        # Remove fields that the ReAct agent shouldn't see
+        legacy_fields = ['requires_response', 'confidence', 'should_respond']
+        
+        for field in legacy_fields:
+            cleaned.pop(field, None)
+        
+        return cleaned
     
     def _get_profile_summary(self, profile: UserProfile) -> Dict[str, Any]:
         """Get summary of user profile for ReAct agent context."""
