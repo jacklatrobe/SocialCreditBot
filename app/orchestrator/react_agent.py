@@ -15,6 +15,7 @@ from langgraph.graph import StateGraph
 from langgraph.prebuilt import ToolNode
 from langgraph.runtime import Runtime
 
+from app.config import get_settings
 from app.orchestrator.react_context import OrchestrationContext
 from app.orchestrator.react_state import OrchestrationState, OrchestrationInput
 from app.orchestrator.react_tools import ORCHESTRATOR_TOOLS
@@ -29,7 +30,7 @@ def load_chat_model(model_name: str) -> ChatOpenAI:
     Load the chat model for orchestration decisions.
     
     Args:
-        model_name: Model name in format "provider/model" (e.g., "openai/gpt-4o-mini")
+        model_name: Model name in format "provider/model" (e.g., "openai/gpt-5-mini")
         
     Returns:
         Configured ChatOpenAI instance
@@ -44,9 +45,13 @@ def load_chat_model(model_name: str) -> ChatOpenAI:
     if provider.lower() != "openai":
         logger.warning(f"Unsupported provider {provider}, defaulting to OpenAI")
     
+    # Get settings to access the API key
+    settings = get_settings()
+    
     return ChatOpenAI(
         model=model,
-        temperature=0.1,  # Low temperature for consistent decision-making
+        api_key=settings.llm_api_key,
+        temperature=1.0,  # GPT-5 only supports default temperature value of 1.0
     )
 
 
@@ -72,23 +77,42 @@ async def call_orchestration_model(
         model = load_chat_model(runtime.context.model).bind_tools(ORCHESTRATOR_TOOLS)
         
         # Format the system prompt
-        system_message = runtime.context.system_prompt.format(
-            system_time=datetime.now(tz=UTC).isoformat()
-        )
+        try:
+            logger.info(f"System prompt before formatting: {repr(runtime.context.system_prompt[:200])}...")
+            system_message = runtime.context.system_prompt.format(
+                system_time=datetime.now(tz=UTC).isoformat()
+            )
+            logger.info(f"System prompt formatted successfully")
+        except Exception as format_error:
+            logger.error(f"Error formatting system prompt: {format_error}")
+            logger.error(f"System prompt full content: {repr(runtime.context.system_prompt)}")
+            # Try to identify the problematic format code
+            import re
+            matches = re.findall(r'{[^}]*}', runtime.context.system_prompt)
+            logger.error(f"All format placeholders found: {matches}")
+            raise
         
         # If this is the first call, create the initial human message with classification data
         messages = list(state.messages) if state.messages else []
         
         if not messages and state.classification:
             # Create initial message with classification information
-            classification_summary = _format_classification_for_prompt(
-                state.classification, 
-                state.context, 
-                state.signal
-            )
-            
-            initial_message = HumanMessage(content=classification_summary)
-            messages = [initial_message]
+            try:
+                logger.info(f"Creating initial message from classification: {state.classification}")
+                classification_summary = _format_classification_for_prompt(
+                    state.classification, 
+                    state.context, 
+                    state.signal
+                )
+                logger.info(f"Classification summary created successfully")
+                initial_message = HumanMessage(content=classification_summary)
+                messages = [initial_message]
+                logger.info(f"Initial message created successfully")
+            except Exception as classification_error:
+                logger.error(f"Error creating classification message: {classification_error}")
+                logger.error(f"Classification data: {state.classification}")
+                logger.error(f"Context data: {state.context}")
+                raise
         
         # Prepare the full conversation
         conversation = [
@@ -97,7 +121,20 @@ async def call_orchestration_model(
         ]
         
         # Get the model's response
-        response = cast(AIMessage, await model.ainvoke(conversation))
+        try:
+            logger.info(f"About to invoke model with {len(conversation)} messages")
+            logger.info(f"System message length: {len(system_message)}")
+            if messages:
+                logger.info(f"First message content preview: {messages[0].content[:200]}...")
+            response = cast(AIMessage, await model.ainvoke(conversation))
+            logger.info(f"Model response received successfully")
+        except Exception as model_error:
+            logger.error(f"Error during model invocation: {model_error}")
+            logger.error(f"Model invocation error type: {type(model_error)}")
+            if hasattr(model_error, '__traceback__'):
+                import traceback
+                logger.error(f"Model invocation traceback: {traceback.format_exc()}")
+            raise
         
         # Handle max steps reached
         if state.is_last_step and response.tool_calls:
@@ -144,16 +181,36 @@ def _format_classification_for_prompt(
     message_type = classification.get('message_type', 'unknown')
     confidence = classification.get('confidence', 0.0)
     sentiment = classification.get('sentiment', 'neutral')
-    toxicity = classification.get('toxicity', 0.0)
+    toxicity_raw = classification.get('toxicity', 0.0)
     requires_response = classification.get('requires_response', False)
     
-    # Get Discord message info
-    discord_msg = context.get('discord_message', {})
-    user_id = discord_msg.get('user_id', 'unknown')
-    channel_id = discord_msg.get('channel_id', 'unknown')
-    message_content = discord_msg.get('content', '')
+    # Handle toxicity - convert 'none' string to 0.0
+    if isinstance(toxicity_raw, str):
+        toxicity = 0.0 if toxicity_raw.lower() in ['none', 'null', ''] else 0.0
+    else:
+        toxicity = float(toxicity_raw) if toxicity_raw is not None else 0.0
     
-    prompt = f"""Please analyze this classified Discord message and decide if a response is needed:
+    # Ensure confidence is numeric
+    if not isinstance(confidence, (int, float)):
+        confidence = 0.0
+    
+    # Get Discord message info - check both context and signal
+    discord_msg = context.get('discord_message', {})
+    
+    # If not in context, get from signal
+    if not discord_msg and signal:
+        user_id = getattr(signal, 'user_id', 'unknown')
+        channel_id = getattr(signal, 'channel_id', 'unknown') 
+        message_content = getattr(signal, 'content', '')
+    else:
+        user_id = discord_msg.get('user_id', 'unknown')
+        channel_id = discord_msg.get('channel_id', 'unknown')
+        message_content = discord_msg.get('content', '')
+    
+    # Build the prompt using f-string to avoid format() conflicts
+    try:
+        logger.info("About to format prompt with f-string")
+        prompt = f"""Please analyze this classified Discord message and decide if a response is needed:
 
 ## Message Classification
 - **Type**: {message_type}
@@ -171,8 +228,14 @@ def _format_classification_for_prompt(
 Based on this classification, should we respond to this message? If yes, what type of response is appropriate?
 
 Use the `send_discord_response` tool if you decide a response is warranted, or explain why no response is needed."""
-
-    return prompt
+        logger.info("F-string prompt formatted successfully")
+        return prompt
+    except Exception as fstring_error:
+        logger.error(f"Error in f-string formatting: {fstring_error}")
+        logger.error(f"Variables: message_type={message_type}, confidence={confidence}, sentiment={sentiment}, toxicity={toxicity}")
+        logger.error(f"Variables: requires_response={requires_response}, user_id={user_id}, channel_id={channel_id}")
+        logger.error(f"Variables: message_content={repr(message_content)}")
+        raise
 
 
 def route_orchestration_output(state: OrchestrationState) -> Literal["__end__", "tools"]:

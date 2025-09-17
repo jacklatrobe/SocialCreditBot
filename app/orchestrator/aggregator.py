@@ -136,7 +136,11 @@ class UserProfileAggregator:
             if not isinstance(signal, DiscordMessage):
                 return None
                 
-            user_id = signal.user_id
+            user_id = signal.author.get('user_id')
+            if not user_id:
+                logger.warning(f"No user_id found in signal {signal.signal_id} author data")
+                return None
+                
             classification = signal.context.get('classification', signal.metadata.get('classification', {}))
             
             if isinstance(classification, str):
@@ -209,7 +213,9 @@ class UserProfileAggregator:
     
     async def _get_or_create_profile(self, signal: DiscordMessage) -> UserProfile:
         """Get existing user profile or create new one."""
-        user_id = signal.user_id
+        user_id = signal.author.get('user_id')
+        if not user_id:
+            raise ValueError(f"No user_id found in signal {signal.signal_id} author data")
         
         # Check memory cache first
         if user_id in self._profiles:

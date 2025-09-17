@@ -89,8 +89,12 @@ class SocialCreditBot(discord.Client):
     
     async def on_message(self, message):
         """Handle incoming Discord messages."""
+        # Log every message received for debugging
+        logger.info(f"📨 Received message from {message.author} in #{message.channel}: '{message.content[:100]}...' (ID: {message.id})")
+        
         # Don't process our own messages
         if message.author == self.user:
+            logger.debug(f"🚫 Skipping own message: {message.id}")
             return
         
         await self._process_message(message)
@@ -143,6 +147,8 @@ class SocialCreditBot(discord.Client):
     
     async def _process_message(self, message: discord.Message, is_edit: bool = False):
         """Process an incoming Discord message."""
+        logger.info(f"🔄 Processing message from {message.author} (ID: {message.id}, Edit: {is_edit})")
+        
         try:
             # Update activity timestamp
             self.stats['last_activity'] = datetime.now(timezone.utc)
@@ -161,7 +167,7 @@ class SocialCreditBot(discord.Client):
                 try:
                     success = await self.signal_bus.publish(
                         signal_type=SignalType.SIGNAL_INGESTED,
-                        data=result.signal.model_dump(),
+                        data={"discord_message": result.signal.model_dump()},
                         source="discord_ingest"
                     )
                     

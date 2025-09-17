@@ -77,13 +77,6 @@ class OrchestrationContext:
         }
     )
     
-    temperature: float = field(
-        default=0.1,
-        metadata={
-            "description": "Temperature for the LLM responses (0.0 = deterministic, 1.0 = creative)."
-        }
-    )
-    
     def __post_init__(self) -> None:
         """Load configuration from environment or settings."""
         settings = get_settings()

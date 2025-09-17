@@ -18,11 +18,13 @@ from contextlib import asynccontextmanager
 from typing import Dict, Any
 
 from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
 import uvicorn
+from datetime import datetime
 
 from app.config import get_settings, validate_configuration
 from app.infra.db import init_database, close_database
-from app.infra.bus import init_signal_bus, close_signal_bus
+from app.infra.bus import init_signal_bus, close_signal_bus, SignalType
 from app.infra.task_manager import start_task_manager, stop_task_manager, get_task_manager
 from app.llm.client import get_llm_client
 from app.orchestrator.react_orchestrator import start_react_orchestrator, stop_react_orchestrator
@@ -30,6 +32,8 @@ from app.observer.llm_observer import start_llm_observer, stop_llm_observer
 from app.ingest.discord_client import get_discord_bot
 from app.monitoring.health import HealthChecker, SystemHealth, HealthStatus
 from app.orchestrator.aggregator import get_aggregator
+from app.infra.bus import get_signal_bus
+from app.signals.discord import DiscordMessage
 
 # Configure logging
 log_handlers = [logging.StreamHandler(sys.stdout)]
@@ -194,6 +198,15 @@ app = FastAPI(
 )
 
 
+# Pydantic models for API
+class SimulateMessageRequest(BaseModel):
+    content: str
+    user_id: str
+    username: str
+    guild_id: str = "123456789"
+    channel_id: str = "987654321"
+
+
 # Health Check Endpoints
 @app.get("/health", response_model=SystemHealth)
 async def health_check():
@@ -271,14 +284,17 @@ async def get_user_profile(user_id: str):
         return {
             "user_id": user_id,
             "profile": {
-                "message_count": profile.message_count,
-                "question_count": profile.question_count,
-                "complaint_count": profile.complaint_count,
-                "toxicity_incidents": profile.toxicity_incidents,
-                "urgency_requests": profile.urgency_requests,
-                "last_activity": profile.last_activity.isoformat() if profile.last_activity else None,
-                "last_react_trigger": profile.last_react_trigger.isoformat() if profile.last_react_trigger else None,
-                "react_trigger_count": profile.react_trigger_count
+                "total_messages": profile.total_messages,
+                "first_seen": profile.first_seen.isoformat() if profile.first_seen else None,
+                "last_seen": profile.last_seen.isoformat() if profile.last_seen else None,
+                "is_new_user": profile.is_new_user,
+                "is_frequent_questioner": profile.is_frequent_questioner,
+                "is_problematic_user": profile.is_problematic_user,
+                "requires_monitoring": profile.requires_monitoring,
+                "unanswered_questions": profile.unanswered_questions,
+                "unresolved_complaints": profile.unresolved_complaints,
+                "recent_urgency_score": profile.recent_urgency_score,
+                "recent_toxicity_score": profile.recent_toxicity_score
             }
         }
     except HTTPException:
@@ -304,13 +320,15 @@ async def list_user_profiles(limit: int = 50):
                 
             all_profiles.append({
                 "user_id": user_id,
-                "message_count": profile.message_count,
-                "question_count": profile.question_count,
-                "complaint_count": profile.complaint_count,
-                "toxicity_incidents": profile.toxicity_incidents,
-                "urgency_requests": profile.urgency_requests,
-                "last_activity": profile.last_activity.isoformat() if profile.last_activity else None,
-                "react_trigger_count": profile.react_trigger_count
+                "total_messages": profile.total_messages,
+                "first_seen": profile.first_seen.isoformat() if profile.first_seen else None,
+                "last_seen": profile.last_seen.isoformat() if profile.last_seen else None,
+                "is_new_user": profile.is_new_user,
+                "is_frequent_questioner": profile.is_frequent_questioner,
+                "is_problematic_user": profile.is_problematic_user,
+                "requires_monitoring": profile.requires_monitoring,
+                "unanswered_questions": profile.unanswered_questions,
+                "unresolved_complaints": profile.unresolved_complaints
             })
             profile_count += 1
         
@@ -356,9 +374,71 @@ async def root():
             "profiles_stats": "/profiles/stats",
             "profiles_list": "/profiles",
             "user_profile": "/profiles/{user_id}",
+            "simulate_message": "/simulate_message",
             "docs": "/docs"
         }
     }
+
+
+@app.post("/simulate_message")
+async def simulate_message(request: SimulateMessageRequest):
+    """
+    Simulate a Discord message for testing purposes.
+    
+    This creates a mock Discord message and publishes it to the signal bus
+    to trigger the full processing pipeline (LLM classification, orchestration).
+    """
+    try:
+        # Create mock Discord message using the Signal structure
+        message = DiscordMessage(
+            signal_id=f"sim_{int(datetime.now().timestamp() * 1000)}",
+            source="discord",  
+            created_at=datetime.now(),  
+            author={
+                "user_id": request.user_id,
+                "username": request.username
+            },
+            context={
+                "guild_id": request.guild_id,
+                "channel_id": request.channel_id,
+                "message_id": f"sim_{int(datetime.now().timestamp() * 1000)}"
+            },
+            content=request.content,
+            # Additional Discord-specific fields
+            guild_name="Test Guild",
+            channel_name="test-channel"
+        )
+        
+        # Get signal bus and publish message
+        signal_bus = get_signal_bus()
+        
+        # Create the signal data structure that matches what discord_client publishes
+        signal_data = {"discord_message": message.model_dump()}
+        
+        # Publish to signal bus with SIGNAL_INGESTED type
+        await signal_bus.publish(
+            signal_type=SignalType.SIGNAL_INGESTED,
+            data=signal_data,
+            source="simulation"
+        )
+        
+        logger.info(f"📝 Simulated Discord message published: user={request.username}, content='{request.content[:50]}...'")
+        
+        return {
+            "success": True,
+            "message": "Message simulation published to signal bus",
+            "simulated_message": {
+                "signal_id": message.signal_id,
+                "content": message.content,
+                "user": request.username,
+                "user_id": request.user_id,
+                "timestamp": message.created_at.isoformat()
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Failed to simulate message: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to simulate message: {str(e)}")
 
 
 def main():

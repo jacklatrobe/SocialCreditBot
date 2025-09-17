@@ -16,6 +16,35 @@ class DiscordMessage(Signal):
     mentions: List[Dict[str, Any]] = []
     
     @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "DiscordMessage":
+        """
+        Create DiscordMessage from dictionary data with proper deserialization.
+        
+        Args:
+            data: Dictionary containing DiscordMessage data
+            
+        Returns:
+            DiscordMessage instance
+        """
+        # Handle classification data that might be complex objects
+        context = data.get('context', {}).copy()
+        if 'classification' in context and not isinstance(context['classification'], str):
+            # Convert complex classification objects to dict
+            if hasattr(context['classification'], 'to_dict'):
+                context['classification'] = context['classification'].to_dict()
+            elif hasattr(context['classification'], 'model_dump'):
+                context['classification'] = context['classification'].model_dump()
+            else:
+                # Fallback: convert to string representation
+                context['classification'] = str(context['classification'])
+        
+        # Clean up any non-serializable data
+        data_copy = data.copy()
+        data_copy['context'] = context
+        
+        return cls(**data_copy)
+    
+    @classmethod
     def from_discord_message(cls, discord_msg, source: str = "discord") -> "DiscordMessage":
         """
         Factory method to create DiscordMessage from discord.py Message object.

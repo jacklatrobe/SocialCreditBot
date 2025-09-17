@@ -105,12 +105,16 @@ class LLMObserver:
             if not self._running:
                 return  # Ignore messages if observer is stopped
                 
+            # Log the signal type for debugging
+            logger.debug(f"LLM Observer received message type: {message.signal_type}")
+            logger.debug(f"Message data keys: {list(message.data.keys()) if isinstance(message.data, dict) else type(message.data)}")
+            
             # Extract signal data from bus message
             signal_data = message.data
             
             # Convert to appropriate signal type
             if 'discord_message' in signal_data:
-                signal = DiscordMessage(**signal_data['discord_message'])
+                signal = DiscordMessage.from_dict(signal_data['discord_message'])
             else:
                 logger.warning(f"Unknown signal type in message: {message.message_id}")
                 return
@@ -145,7 +149,7 @@ class LLMObserver:
                 signal_bus = get_signal_bus()
                 await signal_bus.publish(
                     signal_type=SignalType.SIGNAL_CLASSIFIED,
-                    data={'classified_signal': classified_signal.__dict__},
+                    data={'classified_signal': classified_signal.model_dump()},
                     source="llm_observer",
                     correlation_id=signal.signal_id
                 )
@@ -174,8 +178,23 @@ class LLMObserver:
         """
         # Create enhanced context with classification results
         enhanced_context = original_signal.context.copy()
+        
+        # Serialize classification result to ensure it's a string (as required by Signal model)
+        classification_str = classification
+        if hasattr(classification, 'model_dump'):
+            # If it's a Pydantic model, serialize to JSON string
+            import json
+            classification_str = json.dumps(classification.model_dump())
+        elif hasattr(classification, 'to_dict'):
+            # If it has a to_dict method, use it and convert to JSON
+            import json
+            classification_str = json.dumps(classification.to_dict())
+        elif not isinstance(classification, str):
+            # Fallback: convert to string representation
+            classification_str = str(classification)
+        
         enhanced_context.update({
-            'classification': classification,
+            'classification': classification_str,
             'classified_at': datetime.now(timezone.utc).isoformat(),
             'classifier_version': 'v1.0',
             'processing_stage': 'classified'
@@ -185,14 +204,24 @@ class LLMObserver:
         if isinstance(original_signal, DiscordMessage):
             classified_signal = DiscordMessage(
                 signal_id=original_signal.signal_id,
+                source=original_signal.source,
+                created_at=original_signal.created_at,
                 author=original_signal.author,
                 content=original_signal.content,
-                context=enhanced_context
+                context=enhanced_context,
+                # Copy all other Discord-specific fields
+                guild_name=getattr(original_signal, 'guild_name', None),
+                channel_name=getattr(original_signal, 'channel_name', None),
+                attachments=getattr(original_signal, 'attachments', []),
+                embeds=getattr(original_signal, 'embeds', []),
+                mentions=getattr(original_signal, 'mentions', [])
             )
         else:
-            # For other signal types, create a generic BaseSignal
+            # For other signal types, create a generic BaseSignal with all required fields
             classified_signal = BaseSignal(
                 signal_id=original_signal.signal_id,
+                source=original_signal.source,
+                created_at=original_signal.created_at,
                 author=original_signal.author,
                 content=original_signal.content,
                 context=enhanced_context

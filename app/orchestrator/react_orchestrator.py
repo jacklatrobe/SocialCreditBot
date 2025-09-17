@@ -168,10 +168,28 @@ class ReactMessageOrchestrator:
         try:
             self._stats['messages_received'] += 1
             
-            # Extract the signal
-            signal_data = message.data.get('signal')
-            if not signal_data or not isinstance(signal_data, BaseSignal):
-                logger.warning(f"Invalid signal data in message {message.message_id}")
+            # Extract the classified signal data
+            signal_data = message.data.get('classified_signal')
+            if not signal_data:
+                logger.warning(f"No classified_signal data found in message {message.message_id}")
+                return
+            
+            # Reconstruct the signal from the classified signal data
+            if isinstance(signal_data, dict):
+                try:
+                    # For classified signals, check if it's a DiscordMessage by looking at required fields
+                    if all(field in signal_data for field in ['author', 'content', 'source', 'created_at']):
+                        signal_data = DiscordMessage.from_dict(signal_data)
+                    else:
+                        # Fall back to BaseSignal
+                        signal_data = BaseSignal(**signal_data)
+                except Exception as e:
+                    logger.error(f"Failed to reconstruct classified signal from dict: {e}")
+                    logger.error(f"Signal data keys: {list(signal_data.keys()) if isinstance(signal_data, dict) else 'Not a dict'}")
+                    return
+            
+            if not isinstance(signal_data, BaseSignal):
+                logger.warning(f"Invalid signal data type in message {message.message_id}: {type(signal_data)}")
                 return
             
             # Aggregate the message into user profile
